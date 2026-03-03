@@ -1,12 +1,19 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
 
 class PlayerCreate(BaseModel):
     username: str
     password: str
 
+
 class PlayerLogin(BaseModel):
     username: str
     password: str
+
+
+class WalletDepositRequest(BaseModel):
+    amount: float = Field(gt=0)
+
 
 class PlayerResponse(BaseModel):
     id: int
