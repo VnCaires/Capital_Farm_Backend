@@ -16,6 +16,11 @@ def create_player(db: Session, username: str, password: str) -> models.Player:
     db.add(db_player)
     db.commit()
     db.refresh(db_player)
+
+    db_inventory = models.Inventory(player_id=db_player.id)
+    db.add(db_inventory)
+    db.commit()
+
     return db_player
 
 
@@ -24,3 +29,19 @@ def deposit_balance(db: Session, player: models.Player, amount: float) -> models
     db.commit()
     db.refresh(player)
     return player
+
+
+def get_inventory_by_player_id(db: Session, player_id: int) -> models.Inventory | None:
+    return db.query(models.Inventory).filter(models.Inventory.player_id == player_id).first()
+
+
+def get_or_create_inventory(db: Session, player_id: int) -> models.Inventory:
+    db_inventory = get_inventory_by_player_id(db, player_id)
+    if db_inventory is not None:
+        return db_inventory
+
+    db_inventory = models.Inventory(player_id=player_id)
+    db.add(db_inventory)
+    db.commit()
+    db.refresh(db_inventory)
+    return db_inventory

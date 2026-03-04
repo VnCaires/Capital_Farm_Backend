@@ -1,5 +1,5 @@
-from sqlalchemy import Float, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Float, ForeignKey, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
 
@@ -11,3 +11,15 @@ class Player(Base):
     username: Mapped[str] = mapped_column(String, unique=True, index=True)
     hashed_password: Mapped[str] = mapped_column(String)
     balance: Mapped[float] = mapped_column(Float, default=100.0)
+    inventory: Mapped["Inventory"] = relationship(back_populates="player", uselist=False)
+
+
+class Inventory(Base):
+    __tablename__ = "inventories"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), unique=True, index=True)
+    seeds: Mapped[int] = mapped_column(Integer, default=10)
+    water: Mapped[int] = mapped_column(Integer, default=5)
+    fertilizer: Mapped[int] = mapped_column(Integer, default=3)
+    player: Mapped[Player] = relationship(back_populates="inventory")

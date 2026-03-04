@@ -64,3 +64,13 @@ def wallet_deposit(
         raise HTTPException(status_code=404, detail="Player not found")
 
     return crud.deposit_balance(db, db_player, deposit.amount)
+
+
+@app.get("/inventory/me", response_model=schemas.InventoryResponse)
+def get_my_inventory(username: str = Depends(auth.get_current_username), db: Session = Depends(get_db)):
+    db_player = crud.get_player_by_username(db, username)
+    if db_player is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    db_inventory = crud.get_or_create_inventory(db, db_player.id)
+    return db_inventory
