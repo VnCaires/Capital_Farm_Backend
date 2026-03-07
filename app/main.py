@@ -88,4 +88,24 @@ def get_my_inventory(username: str = Depends(auth.get_current_username), db: Ses
         raise HTTPException(status_code=404, detail="Player not found")
 
     db_inventory = crud.get_or_create_inventory(db, db_player.id)
-    return db_inventory
+    return crud.get_inventory_structured(db, db_inventory)
+
+
+@app.post("/inventory/items/add", response_model=schemas.InventoryResponse)
+def add_inventory_item(
+    payload: schemas.InventoryAddItemRequest,
+    username: str = Depends(auth.get_current_username),
+    db: Session = Depends(get_db),
+):
+    db_player = crud.get_player_by_username(db, username)
+    if db_player is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    db_inventory = crud.get_or_create_inventory(db, db_player.id)
+
+    try:
+        crud.add_item_to_inventory(db, db_inventory, payload.item_code, payload.quantity)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return crud.get_inventory_structured(db, db_inventory)

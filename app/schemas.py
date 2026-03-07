@@ -27,15 +27,29 @@ class WalletTransactionResponse(BaseModel):
         from_attributes = True
 
 
+class InventoryAddItemRequest(BaseModel):
+    item_code: str
+    quantity: int = Field(gt=0)
+
+
+class InventoryItemResponse(BaseModel):
+    code: str
+    name: str
+    category: str
+    quantity: int
+
+
+class InventoryCategoryResponse(BaseModel):
+    category: str
+    items: list[InventoryItemResponse]
+
+
 class InventoryResponse(BaseModel):
     id: int
     player_id: int
-    seeds: int
-    water: int
-    fertilizer: int
-
-    class Config:
-        from_attributes = True
+    capacity_limit: int
+    total_quantity: int
+    categories: list[InventoryCategoryResponse]
 
 
 class PlayerResponse(BaseModel):

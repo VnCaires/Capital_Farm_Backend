@@ -1,20 +1,45 @@
+from collections import defaultdict
+
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from . import auth, models
 
 
 ALLOWED_TRANSACTION_TYPES = {"deposit", "expense"}
+INVENTORY_CAPACITY_LIMIT = 100
+DEFAULT_ITEM_CATALOG: list[tuple[str, str, str]] = [
+    ("seed_basic", "Basic Seed", "seed"),
+    ("water_basic", "Water", "resource"),
+    ("fertilizer_basic", "Fertilizer", "resource"),
+]
 
 
 def get_player_by_username(db: Session, username: str) -> models.Player | None:
     return db.query(models.Player).filter(models.Player.username == username).first()
 
 
+def get_item_catalog_by_code(db: Session, code: str) -> models.ItemCatalog | None:
+    return db.query(models.ItemCatalog).filter(models.ItemCatalog.code == code).first()
+
+
+def ensure_default_item_catalog(db: Session) -> bool:
+    changed = False
+    for code, name, category in DEFAULT_ITEM_CATALOG:
+        db_item = get_item_catalog_by_code(db, code)
+        if db_item is None:
+            db.add(models.ItemCatalog(code=code, name=name, category=category))
+            changed = True
+    if changed:
+        db.flush()
+    return changed
+
+
 def create_player(db: Session, username: str, password: str) -> models.Player:
     hashed_password = auth.hash_password(password)
     db_player = models.Player(
         username=username,
-        hashed_password=hashed_password
+        hashed_password=hashed_password,
     )
 
     try:
@@ -23,6 +48,9 @@ def create_player(db: Session, username: str, password: str) -> models.Player:
 
         db_inventory = models.Inventory(player_id=db_player.id)
         db.add(db_inventory)
+
+        ensure_default_item_catalog(db)
+        bootstrap_inventory_items_from_legacy(db, db_inventory)
 
         db.commit()
         db.refresh(db_player)
@@ -78,13 +106,144 @@ def get_inventory_by_player_id(db: Session, player_id: int) -> models.Inventory 
     return db.query(models.Inventory).filter(models.Inventory.player_id == player_id).first()
 
 
+def bootstrap_inventory_items_from_legacy(db: Session, inventory: models.Inventory) -> bool:
+    has_items = (
+        db.query(models.InventoryItem)
+        .filter(models.InventoryItem.inventory_id == inventory.id)
+        .first()
+        is not None
+    )
+    if has_items:
+        return False
+
+    legacy_items = [
+        ("seed_basic", max(0, inventory.seeds)),
+        ("water_basic", max(0, inventory.water)),
+        ("fertilizer_basic", max(0, inventory.fertilizer)),
+    ]
+
+    changed = False
+    for code, quantity in legacy_items:
+        if quantity <= 0:
+            continue
+
+        db_catalog = get_item_catalog_by_code(db, code)
+        if db_catalog is None:
+            continue
+
+        db.add(
+            models.InventoryItem(
+                inventory_id=inventory.id,
+                item_id=db_catalog.id,
+                quantity=quantity,
+            )
+        )
+        changed = True
+
+    return changed
+
+
 def get_or_create_inventory(db: Session, player_id: int) -> models.Inventory:
     db_inventory = get_inventory_by_player_id(db, player_id)
-    if db_inventory is not None:
-        return db_inventory
+    created_inventory = False
 
-    db_inventory = models.Inventory(player_id=player_id)
-    db.add(db_inventory)
-    db.commit()
-    db.refresh(db_inventory)
+    if db_inventory is None:
+        db_inventory = models.Inventory(player_id=player_id)
+        db.add(db_inventory)
+        db.flush()
+        created_inventory = True
+
+    catalog_changed = ensure_default_item_catalog(db)
+    bootstrap_changed = bootstrap_inventory_items_from_legacy(db, db_inventory)
+
+    if created_inventory or catalog_changed or bootstrap_changed:
+        db.commit()
+        db.refresh(db_inventory)
+
     return db_inventory
+
+
+def get_inventory_total_quantity(db: Session, inventory_id: int) -> int:
+    total_quantity = (
+        db.query(func.coalesce(func.sum(models.InventoryItem.quantity), 0))
+        .filter(models.InventoryItem.inventory_id == inventory_id)
+        .scalar()
+    )
+    return int(total_quantity or 0)
+
+
+def add_item_to_inventory(
+    db: Session,
+    inventory: models.Inventory,
+    item_code: str,
+    quantity: int,
+) -> None:
+    if quantity <= 0:
+        raise ValueError("Quantity must be greater than zero")
+
+    ensure_default_item_catalog(db)
+    db_item = get_item_catalog_by_code(db, item_code)
+    if db_item is None:
+        raise ValueError("Item code not found")
+
+    current_total = get_inventory_total_quantity(db, inventory.id)
+    if current_total + quantity > INVENTORY_CAPACITY_LIMIT:
+        raise ValueError("Inventory capacity exceeded")
+
+    db_inventory_item = (
+        db.query(models.InventoryItem)
+        .filter(
+            models.InventoryItem.inventory_id == inventory.id,
+            models.InventoryItem.item_id == db_item.id,
+        )
+        .first()
+    )
+
+    if db_inventory_item is None:
+        db_inventory_item = models.InventoryItem(
+            inventory_id=inventory.id,
+            item_id=db_item.id,
+            quantity=quantity,
+        )
+        db.add(db_inventory_item)
+    else:
+        db_inventory_item.quantity += quantity
+
+    db.commit()
+
+
+def get_inventory_structured(db: Session, inventory: models.Inventory) -> dict:
+    rows: list[tuple[models.InventoryItem, models.ItemCatalog]] = (
+        db.query(models.InventoryItem, models.ItemCatalog)
+        .join(models.ItemCatalog, models.InventoryItem.item_id == models.ItemCatalog.id)
+        .filter(models.InventoryItem.inventory_id == inventory.id)
+        .order_by(models.ItemCatalog.category.asc(), models.ItemCatalog.name.asc())
+        .all()
+    )
+
+    grouped: dict[str, list[dict[str, int | str]]] = defaultdict(list)
+    total_quantity = 0
+
+    for inv_item, catalog_item in rows:
+        total_quantity += inv_item.quantity
+        grouped[catalog_item.category].append(
+            {
+                "code": catalog_item.code,
+                "name": catalog_item.name,
+                "category": catalog_item.category,
+                "quantity": inv_item.quantity,
+            }
+        )
+
+    categories = [
+        {"category": category, "items": items}
+        for category, items in grouped.items()
+    ]
+
+    return {
+        "id": inventory.id,
+        "player_id": inventory.player_id,
+        "capacity_limit": INVENTORY_CAPACITY_LIMIT,
+        "total_quantity": total_quantity,
+        "categories": categories,
+    }
