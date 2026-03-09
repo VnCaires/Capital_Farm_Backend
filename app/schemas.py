@@ -1,11 +1,19 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 
 class PlayerCreate(BaseModel):
     username: str
+    email: str
     password: str
+
+    @validator("email")
+    def validate_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
+            raise ValueError("Invalid email")
+        return normalized
 
 
 class PlayerLogin(BaseModel):
@@ -15,6 +23,20 @@ class PlayerLogin(BaseModel):
 
 class WalletDepositRequest(BaseModel):
     amount: float = Field(gt=0)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str
 
 
 class WalletTransactionResponse(BaseModel):
@@ -55,6 +77,8 @@ class InventoryResponse(BaseModel):
 class PlayerResponse(BaseModel):
     id: int
     username: str
+    email: str | None
+    email_verified: bool
     balance: float
 
     class Config:

@@ -44,8 +44,18 @@ Documentação: `http://localhost:8000/docs`
 ## Endpoints
 
 - `POST /register` - Registrar novo jogador
-- `POST /login` - Fazer login
+- `POST /login` - Fazer login (retorna access token + refresh token)
+- `POST /token/refresh` - Renovar sessao usando refresh token
+- `POST /logout` - Invalidar sessao atual (access token + refresh token)
 - `GET /me` - Obter dados do jogador autenticado
+
+## Session Policy
+
+- Access token expira em `ACCESS_TOKEN_EXPIRE_MINUTES` (padrao: 60).
+- Refresh token expira em `REFRESH_TOKEN_EXPIRE_DAYS` (padrao: 7).
+- `POST /token/refresh` faz rotacao de refresh token (o token antigo e revogado).
+- `POST /logout` revoga o access token atual e o refresh token enviado.
+- Tokens expirados ou revogados retornam `401 Unauthorized`.
 
 ## Estrutura do Projeto
 

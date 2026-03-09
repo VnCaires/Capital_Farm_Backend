@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -11,10 +11,14 @@ class Player(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     username: Mapped[str] = mapped_column(String, unique=True, index=True)
+    email: Mapped[str | None] = mapped_column(String, unique=True, index=True, nullable=True)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=True)
     hashed_password: Mapped[str] = mapped_column(String)
     balance: Mapped[float] = mapped_column(Float, default=100.0)
     inventory: Mapped["Inventory"] = relationship(back_populates="player", uselist=False)
+    profile: Mapped["PlayerProfile"] = relationship(back_populates="player", uselist=False)
     wallet_transactions: Mapped[list["WalletTransaction"]] = relationship(back_populates="player")
+    refresh_sessions: Mapped[list["RefreshSession"]] = relationship(back_populates="player")
 
 
 class Inventory(Base):
@@ -61,3 +65,37 @@ class WalletTransaction(Base):
     amount: Mapped[float] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     player: Mapped[Player] = relationship(back_populates="wallet_transactions")
+
+
+class PlayerProfile(Base):
+    __tablename__ = "player_profiles"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String, default="")
+    avatar_url: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    player: Mapped[Player] = relationship(back_populates="profile")
+
+
+class RefreshSession(Base):
+    __tablename__ = "refresh_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), index=True)
+    jti: Mapped[str] = mapped_column(String, unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    player: Mapped[Player] = relationship(back_populates="refresh_sessions")
+
+
+class RevokedAccessToken(Base):
+    __tablename__ = "revoked_access_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    jti: Mapped[str] = mapped_column(String, unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

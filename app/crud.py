@@ -1,3 +1,4 @@
+import os
 from collections import defaultdict
 
 from sqlalchemy import func
@@ -13,10 +14,24 @@ DEFAULT_ITEM_CATALOG: list[tuple[str, str, str]] = [
     ("water_basic", "Water", "resource"),
     ("fertilizer_basic", "Fertilizer", "resource"),
 ]
+EMAIL_VERIFICATION_ENABLED = os.getenv("EMAIL_VERIFICATION_ENABLED", "false").lower() == "true"
 
 
 def get_player_by_username(db: Session, username: str) -> models.Player | None:
     return db.query(models.Player).filter(models.Player.username == username).first()
+
+
+def get_player_by_email(db: Session, email: str) -> models.Player | None:
+    return db.query(models.Player).filter(models.Player.email == email).first()
+
+
+def get_player_by_login_identifier(db: Session, identifier: str) -> models.Player | None:
+    db_player = get_player_by_username(db, identifier)
+    if db_player is not None:
+        return db_player
+
+    normalized_identifier = identifier.strip().lower()
+    return get_player_by_email(db, normalized_identifier)
 
 
 def get_item_catalog_by_code(db: Session, code: str) -> models.ItemCatalog | None:
@@ -35,10 +50,13 @@ def ensure_default_item_catalog(db: Session) -> bool:
     return changed
 
 
-def create_player(db: Session, username: str, password: str) -> models.Player:
+def create_player(db: Session, username: str, email: str, password: str) -> models.Player:
+    normalized_email = email.strip().lower()
     hashed_password = auth.hash_password(password)
     db_player = models.Player(
         username=username,
+        email=normalized_email,
+        email_verified=not EMAIL_VERIFICATION_ENABLED,
         hashed_password=hashed_password,
     )
 
@@ -47,7 +65,13 @@ def create_player(db: Session, username: str, password: str) -> models.Player:
         db.flush()
 
         db_inventory = models.Inventory(player_id=db_player.id)
+        db_profile = models.PlayerProfile(
+            player_id=db_player.id,
+            display_name=username,
+            avatar_url="",
+        )
         db.add(db_inventory)
+        db.add(db_profile)
 
         ensure_default_item_catalog(db)
         bootstrap_inventory_items_from_legacy(db, db_inventory)
@@ -210,6 +234,7 @@ def add_item_to_inventory(
         db_inventory_item.quantity += quantity
 
     db.commit()
+    
 
 
 def get_inventory_structured(db: Session, inventory: models.Inventory) -> dict:
