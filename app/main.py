@@ -1,11 +1,11 @@
 from collections.abc import Generator
 
 from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from . import auth, crud, database, models, schemas
 
+database.run_startup_migrations()
 models.Base.metadata.create_all(bind=database.engine)
 
 app = FastAPI()
@@ -25,12 +25,19 @@ def register(player: schemas.PlayerCreate, db: Session = Depends(get_db)):
     if db_player is not None:
         raise HTTPException(status_code=400, detail="Username already registered")
 
-    return crud.create_player(db, player.username, player.password)
+    db_player = crud.get_player_by_email(db, player.email)
+    if db_player is not None:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    return crud.create_player(db, player.username, player.email, player.password)
 
 
-@app.post("/login")
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    db_player = crud.get_player_by_username(db, form_data.username)
+@app.post("/login", response_model=schemas.TokenResponse)
+def login(
+    form_data: auth.OAuth2IdentifierRequestForm = Depends(),
+    db: Session = Depends(get_db),
+) -> schemas.TokenResponse:
+    db_player = crud.get_player_by_login_identifier(db, form_data.username)
 
     if db_player is None:
         raise HTTPException(status_code=400, detail="Invalid credentials")
@@ -38,8 +45,71 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     if not auth.verify_password(form_data.password, db_player.hashed_password):
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    access_token = auth.create_access_token(data={"sub": db_player.username})
-    return {"access_token": access_token, "token_type": "bearer"}
+    access_token, _access_jti, _access_expiry = auth.create_access_token(data={"sub": db_player.username})
+    refresh_token, refresh_jti, refresh_expiry = auth.create_refresh_token(data={"sub": db_player.username})
+    auth.store_refresh_session(db, db_player.id, refresh_jti, refresh_expiry)
+
+    return schemas.TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+    )
+
+
+@app.post("/token/refresh", response_model=schemas.TokenResponse)
+def refresh_token(payload: schemas.RefreshTokenRequest, db: Session = Depends(get_db)):
+    refresh_payload = auth.decode_token(payload.refresh_token, expected_type="refresh")
+    refresh_username = refresh_payload["sub"]
+    refresh_jti = refresh_payload["jti"]
+
+    db_player = crud.get_player_by_username(db, refresh_username)
+    if db_player is None:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    access_token, _access_jti, _access_expiry = auth.create_access_token(data={"sub": db_player.username})
+    new_refresh_token, new_refresh_jti, new_refresh_expiry = auth.create_refresh_token(
+        data={"sub": db_player.username}
+    )
+    auth.rotate_refresh_session(
+        db,
+        player_id=db_player.id,
+        old_jti=refresh_jti,
+        new_jti=new_refresh_jti,
+        new_expires_at=new_refresh_expiry,
+    )
+
+    return schemas.TokenResponse(
+        access_token=access_token,
+        refresh_token=new_refresh_token,
+        token_type="bearer",
+    )
+
+
+@app.post("/logout")
+def logout(
+    payload: schemas.LogoutRequest,
+    token_payload: dict = Depends(auth.get_current_token_payload),
+    db: Session = Depends(get_db),
+):
+    username = token_payload["sub"]
+    access_jti = token_payload["jti"]
+    access_expiry = auth.get_token_expiry(token_payload)
+
+    refresh_payload = auth.decode_token(payload.refresh_token, expected_type="refresh")
+    refresh_username = refresh_payload["sub"]
+    refresh_jti = refresh_payload["jti"]
+
+    if refresh_username != username:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    db_player = crud.get_player_by_username(db, username)
+    if db_player is None:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    auth.revoke_refresh_session(db, db_player.id, refresh_jti)
+    auth.revoke_access_token(db, access_jti, access_expiry)
+
+    return {"detail": "Logged out"}
 
 
 @app.get("/me", response_model=schemas.PlayerResponse)
