@@ -161,6 +161,11 @@ class PlayerCropResponse(BaseModel):
     is_ready: bool
 
 
+class HarvestCropResponse(BaseModel):
+    crop: PlayerCropResponse
+    inventory: InventoryResponse
+
+
 class LandPlotCreateRequest(BaseModel):
     x: int = Field(ge=0)
     y: int = Field(ge=0)

@@ -260,6 +260,24 @@ def get_my_crop_state(
     return crud.build_player_crop_response(db_player_crop)
 
 
+@app.post("/crops/{crop_id}/harvest", response_model=schemas.HarvestCropResponse)
+def harvest_my_crop(
+    crop_id: int,
+    username: str = Depends(auth.get_current_username),
+    db: Session = Depends(get_db),
+):
+    db_player = crud.get_player_by_username(db, username)
+    if db_player is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    try:
+        db_player_crop, inventory = crud.harvest_crop(db, db_player, crop_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"crop": crud.build_player_crop_response(db_player_crop), "inventory": inventory}
+
+
 @app.get("/land/me", response_model=schemas.LandGridResponse)
 def get_my_land(username: str = Depends(auth.get_current_username), db: Session = Depends(get_db)):
     db_player = crud.get_player_by_username(db, username)

@@ -10,7 +10,7 @@ from . import auth, models
 
 ALLOWED_TRANSACTION_TYPES = {"deposit", "expense"}
 ALLOWED_LAND_STATES = {"empty", "plowed", "planted"}
-ALLOWED_CROP_STATES = {"planted", "growing", "ready"}
+ALLOWED_CROP_STATES = {"planted", "growing", "ready", "harvested"}
 INVENTORY_CAPACITY_LIMIT = 100
 DEFAULT_LAND_WIDTH = 3
 DEFAULT_LAND_HEIGHT = 3
@@ -68,6 +68,9 @@ def _compute_crop_growth_metrics(player_crop: models.PlayerCrop) -> tuple[str, i
     growth_time_seconds = max(0, int(player_crop.crop_type.growth_time_seconds))
     elapsed_growth_seconds = max(0, int((_utcnow() - player_crop.planted_at).total_seconds()))
 
+    if player_crop.state == "harvested":
+        return "harvested", elapsed_growth_seconds, 0
+
     if growth_time_seconds == 0 or elapsed_growth_seconds >= growth_time_seconds:
         return "ready", elapsed_growth_seconds, 0
 
@@ -78,6 +81,9 @@ def _compute_crop_growth_metrics(player_crop: models.PlayerCrop) -> tuple[str, i
 
 
 def sync_player_crop_state(db: Session, player_crop: models.PlayerCrop) -> models.PlayerCrop:
+    if player_crop.state == "harvested":
+        return player_crop
+
     expected_state, _elapsed_growth_seconds, _seconds_until_ready = _compute_crop_growth_metrics(player_crop)
     if player_crop.state != expected_state:
         player_crop.state = expected_state
@@ -89,6 +95,8 @@ def sync_player_crop_state(db: Session, player_crop: models.PlayerCrop) -> model
 def sync_player_crop_states(db: Session, player_crops: list[models.PlayerCrop]) -> list[models.PlayerCrop]:
     changed = False
     for player_crop in player_crops:
+        if player_crop.state == "harvested":
+            continue
         expected_state, _elapsed_growth_seconds, _seconds_until_ready = _compute_crop_growth_metrics(player_crop)
         if player_crop.state != expected_state:
             player_crop.state = expected_state
@@ -508,39 +516,21 @@ def add_item_to_inventory(
     inventory: models.Inventory,
     item_code: str,
     quantity: int,
+    *,
+    commit: bool = True,
 ) -> None:
     if quantity <= 0:
         raise ValueError("Quantity must be greater than zero")
 
     ensure_default_item_catalog(db)
-    db_item = get_item_catalog_by_code(db, item_code)
-    if db_item is None:
-        raise ValueError("Item code not found")
-
     current_total = get_inventory_total_quantity(db, inventory.id)
     if current_total + quantity > INVENTORY_CAPACITY_LIMIT:
         raise ValueError("Inventory capacity exceeded")
 
-    db_inventory_item = (
-        db.query(models.InventoryItem)
-        .filter(
-            models.InventoryItem.inventory_id == inventory.id,
-            models.InventoryItem.item_id == db_item.id,
-        )
-        .first()
-    )
+    _upsert_inventory_item_quantity(db, inventory.id, item_code, quantity)
 
-    if db_inventory_item is None:
-        db_inventory_item = models.InventoryItem(
-            inventory_id=inventory.id,
-            item_id=db_item.id,
-            quantity=quantity,
-        )
-        db.add(db_inventory_item)
-    else:
-        db_inventory_item.quantity += quantity
-
-    db.commit()
+    if commit:
+        db.commit()
     
 
 
@@ -659,6 +649,40 @@ def plant_crop(
     db.commit()
     db.refresh(db_player_crop)
     return db_player_crop
+
+
+def harvest_crop(db: Session, player: models.Player, crop_id: int) -> tuple[models.PlayerCrop, dict]:
+    db_player_crop = get_player_crop_by_id_for_player(db, player.id, crop_id)
+    if db_player_crop is None:
+        raise ValueError("Crop not found")
+
+    if db_player_crop.state != "ready":
+        raise ValueError("Crop is not ready for harvest")
+
+    db_inventory = get_or_create_inventory(db, player.id)
+    add_item_to_inventory(
+        db,
+        db_inventory,
+        db_player_crop.crop_type.product_item_code,
+        db_player_crop.crop_type.yield_quantity,
+        commit=False,
+    )
+
+    db_plot = db_player_crop.land_plot
+    db_player_crop.state = "harvested"
+    db_plot.state = "empty"
+    db_plot.is_occupied = False
+
+    db_stats = get_stats_by_player_id(db, player.id)
+    if db_stats is not None:
+        db_stats.crops_harvested += 1
+
+    db.commit()
+    db.refresh(db_player_crop)
+    db.refresh(db_plot)
+    db.refresh(db_inventory)
+
+    return db_player_crop, get_inventory_structured(db, db_inventory)
 
 
 def get_inventory_structured(db: Session, inventory: models.Inventory) -> dict:
