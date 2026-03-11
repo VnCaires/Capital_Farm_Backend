@@ -243,6 +243,23 @@ def get_my_crops(username: str = Depends(auth.get_current_username), db: Session
     return [crud.build_player_crop_response(player_crop) for player_crop in crud.list_player_crops(db, db_player.id)]
 
 
+@app.get("/crops/{crop_id}/state", response_model=schemas.PlayerCropResponse)
+def get_my_crop_state(
+    crop_id: int,
+    username: str = Depends(auth.get_current_username),
+    db: Session = Depends(get_db),
+):
+    db_player = crud.get_player_by_username(db, username)
+    if db_player is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    db_player_crop = crud.get_player_crop_by_id_for_player(db, db_player.id, crop_id)
+    if db_player_crop is None:
+        raise HTTPException(status_code=404, detail="Crop not found")
+
+    return crud.build_player_crop_response(db_player_crop)
+
+
 @app.get("/land/me", response_model=schemas.LandGridResponse)
 def get_my_land(username: str = Depends(auth.get_current_username), db: Session = Depends(get_db)):
     db_player = crud.get_player_by_username(db, username)

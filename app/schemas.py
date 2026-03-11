@@ -155,6 +155,10 @@ class PlayerCropResponse(BaseModel):
     land_plot_id: int
     planted_at: datetime
     state: str
+    growth_time_seconds: int
+    elapsed_growth_seconds: int
+    seconds_until_ready: int
+    is_ready: bool
 
 
 class LandPlotCreateRequest(BaseModel):

@@ -1,5 +1,6 @@
 import os
 from collections import defaultdict
+from datetime import datetime
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -55,6 +56,50 @@ def _validate_land_state(state: str) -> str:
     if normalized not in ALLOWED_LAND_STATES:
         raise ValueError("Invalid land state")
     return normalized
+
+
+
+
+def _utcnow() -> datetime:
+    return datetime.utcnow()
+
+
+def _compute_crop_growth_metrics(player_crop: models.PlayerCrop) -> tuple[str, int, int]:
+    growth_time_seconds = max(0, int(player_crop.crop_type.growth_time_seconds))
+    elapsed_growth_seconds = max(0, int((_utcnow() - player_crop.planted_at).total_seconds()))
+
+    if growth_time_seconds == 0 or elapsed_growth_seconds >= growth_time_seconds:
+        return "ready", elapsed_growth_seconds, 0
+
+    if elapsed_growth_seconds >= growth_time_seconds // 2:
+        return "growing", elapsed_growth_seconds, growth_time_seconds - elapsed_growth_seconds
+
+    return "planted", elapsed_growth_seconds, growth_time_seconds - elapsed_growth_seconds
+
+
+def sync_player_crop_state(db: Session, player_crop: models.PlayerCrop) -> models.PlayerCrop:
+    expected_state, _elapsed_growth_seconds, _seconds_until_ready = _compute_crop_growth_metrics(player_crop)
+    if player_crop.state != expected_state:
+        player_crop.state = expected_state
+        db.commit()
+        db.refresh(player_crop)
+    return player_crop
+
+
+def sync_player_crop_states(db: Session, player_crops: list[models.PlayerCrop]) -> list[models.PlayerCrop]:
+    changed = False
+    for player_crop in player_crops:
+        expected_state, _elapsed_growth_seconds, _seconds_until_ready = _compute_crop_growth_metrics(player_crop)
+        if player_crop.state != expected_state:
+            player_crop.state = expected_state
+            changed = True
+
+    if changed:
+        db.commit()
+        for player_crop in player_crops:
+            db.refresh(player_crop)
+
+    return player_crops
 
 
 def get_player_by_username(db: Session, username: str) -> models.Player | None:
@@ -541,15 +586,28 @@ def list_crop_types(db: Session) -> list[models.CropType]:
 
 
 def list_player_crops(db: Session, player_id: int) -> list[models.PlayerCrop]:
-    return (
+    player_crops = (
         db.query(models.PlayerCrop)
         .filter(models.PlayerCrop.player_id == player_id)
         .order_by(models.PlayerCrop.planted_at.desc())
         .all()
     )
+    return sync_player_crop_states(db, player_crops)
+
+
+def get_player_crop_by_id_for_player(db: Session, player_id: int, crop_id: int) -> models.PlayerCrop | None:
+    db_player_crop = (
+        db.query(models.PlayerCrop)
+        .filter(models.PlayerCrop.player_id == player_id, models.PlayerCrop.id == crop_id)
+        .first()
+    )
+    if db_player_crop is None:
+        return None
+    return sync_player_crop_state(db, db_player_crop)
 
 
 def build_player_crop_response(player_crop: models.PlayerCrop) -> dict:
+    state, elapsed_growth_seconds, seconds_until_ready = _compute_crop_growth_metrics(player_crop)
     return {
         "id": player_crop.id,
         "player_id": player_crop.player_id,
@@ -558,7 +616,11 @@ def build_player_crop_response(player_crop: models.PlayerCrop) -> dict:
         "product_item_code": player_crop.crop_type.product_item_code,
         "land_plot_id": player_crop.land_plot_id,
         "planted_at": player_crop.planted_at,
-        "state": player_crop.state,
+        "state": state,
+        "growth_time_seconds": player_crop.crop_type.growth_time_seconds,
+        "elapsed_growth_seconds": elapsed_growth_seconds,
+        "seconds_until_ready": seconds_until_ready,
+        "is_ready": state == "ready",
     }
 
 
