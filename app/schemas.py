@@ -135,6 +135,7 @@ class CropTypeResponse(BaseModel):
     yield_quantity: int
     base_value: float
     seed_item_code: str
+    product_item_code: str
 
     class Config:
         from_attributes = True
@@ -150,6 +151,7 @@ class PlayerCropResponse(BaseModel):
     player_id: int
     crop_type_code: str
     crop_type_name: str
+    product_item_code: str
     land_plot_id: int
     planted_at: datetime
     state: str

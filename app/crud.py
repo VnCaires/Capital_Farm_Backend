@@ -15,15 +15,34 @@ DEFAULT_LAND_WIDTH = 3
 DEFAULT_LAND_HEIGHT = 3
 DEFAULT_SOIL_TYPE = "loam"
 DEFAULT_ITEM_CATALOG: list[tuple[str, str, str]] = [
-    ("seed_basic", "Basic Seed", "seed"),
-    ("water_basic", "Water", "resource"),
-    ("fertilizer_basic", "Fertilizer", "resource"),
+    ("seed_wheat", "Semente de Trigo", "seed"),
+    ("seed_corn", "Semente de Milho", "seed"),
+    ("seed_soy", "Semente de Soja", "seed"),
+    ("wheat", "Trigo", "crop"),
+    ("corn", "Milho", "crop"),
+    ("soy", "Soja", "crop"),
+    ("flour", "Farinha", "processed_good"),
+    ("bread", "Pao", "processed_good"),
+    ("feed", "Racao", "processed_good"),
+    ("chicken", "Galinha", "livestock"),
+    ("eggs", "Ovos", "animal_product"),
+    ("ethanol", "Etanol", "fuel"),
+    ("oil", "Oleo", "fuel"),
+    ("biodiesel", "Biodiesel", "fuel"),
+    ("workers", "Trabalhadores", "support"),
+    ("machines", "Maquinas", "support"),
+    ("manure", "Esterco", "fertility"),
+    ("fertilizer", "Fertilizante", "fertility"),
+    ("water_basic", "Agua", "resource"),
+    ("fertilizer_basic", "Fertilizante Basico", "resource"),
+    ("seed_basic", "Semente Legada", "legacy"),
 ]
-DEFAULT_CROP_TYPES: list[tuple[str, str, int, int, float, str]] = [
-    ("carrot", "Carrot", 300, 2, 5.0, "seed_basic"),
-    ("corn", "Corn", 600, 3, 8.0, "seed_basic"),
-    ("wheat", "Wheat", 480, 2, 6.0, "seed_basic"),
+DEFAULT_CROP_TYPES: list[tuple[str, str, int, int, float, str, str]] = [
+    ("wheat", "Trigo", 480, 2, 6.0, "seed_wheat", "wheat"),
+    ("corn", "Milho", 600, 3, 8.0, "seed_corn", "corn"),
+    ("soy", "Soja", 720, 2, 7.0, "seed_soy", "soy"),
 ]
+SUPPORTED_CROP_TYPE_CODES = {crop_type[0] for crop_type in DEFAULT_CROP_TYPES}
 EMAIL_VERIFICATION_ENABLED = os.getenv("EMAIL_VERIFICATION_ENABLED", "false").lower() == "true"
 
 
@@ -66,6 +85,14 @@ def ensure_default_item_catalog(db: Session) -> bool:
         if db_item is None:
             db.add(models.ItemCatalog(code=code, name=name, category=category))
             changed = True
+            continue
+
+        if db_item.name != name:
+            db_item.name = name
+            changed = True
+        if db_item.category != category:
+            db_item.category = category
+            changed = True
     if changed:
         db.flush()
     return changed
@@ -74,12 +101,15 @@ def ensure_default_item_catalog(db: Session) -> bool:
 
 
 def get_crop_type_by_code(db: Session, code: str) -> models.CropType | None:
-    return db.query(models.CropType).filter(models.CropType.code == code).first()
+    normalized_code = code.strip().lower()
+    if normalized_code not in SUPPORTED_CROP_TYPE_CODES:
+        return None
+    return db.query(models.CropType).filter(models.CropType.code == normalized_code).first()
 
 
 def ensure_default_crop_types(db: Session) -> bool:
     changed = False
-    for code, name, growth_time_seconds, yield_quantity, base_value, seed_item_code in DEFAULT_CROP_TYPES:
+    for code, name, growth_time_seconds, yield_quantity, base_value, seed_item_code, product_item_code in DEFAULT_CROP_TYPES:
         db_crop_type = get_crop_type_by_code(db, code)
         if db_crop_type is None:
             db.add(
@@ -90,12 +120,117 @@ def ensure_default_crop_types(db: Session) -> bool:
                     yield_quantity=yield_quantity,
                     base_value=base_value,
                     seed_item_code=seed_item_code,
+                    product_item_code=product_item_code,
                 )
             )
+            changed = True
+            continue
+
+        if db_crop_type.name != name:
+            db_crop_type.name = name
+            changed = True
+        if db_crop_type.growth_time_seconds != growth_time_seconds:
+            db_crop_type.growth_time_seconds = growth_time_seconds
+            changed = True
+        if db_crop_type.yield_quantity != yield_quantity:
+            db_crop_type.yield_quantity = yield_quantity
+            changed = True
+        if db_crop_type.base_value != base_value:
+            db_crop_type.base_value = base_value
+            changed = True
+        if db_crop_type.seed_item_code != seed_item_code:
+            db_crop_type.seed_item_code = seed_item_code
+            changed = True
+        if db_crop_type.product_item_code != product_item_code:
+            db_crop_type.product_item_code = product_item_code
             changed = True
     if changed:
         db.flush()
     return changed
+
+
+
+
+def _distribute_legacy_seed_quantity(quantity: int) -> list[tuple[str, int]]:
+    seed_codes = ["seed_wheat", "seed_corn", "seed_soy"]
+    base_quantity = quantity // len(seed_codes)
+    remainder = quantity % len(seed_codes)
+    distributed: list[tuple[str, int]] = []
+
+    for index, seed_code in enumerate(seed_codes):
+        allocated_quantity = base_quantity + (1 if index < remainder else 0)
+        if allocated_quantity > 0:
+            distributed.append((seed_code, allocated_quantity))
+
+    return distributed
+
+
+def _upsert_inventory_item_quantity(
+    db: Session,
+    inventory_id: int,
+    item_code: str,
+    quantity: int,
+) -> None:
+    if quantity <= 0:
+        return
+
+    db_item = get_item_catalog_by_code(db, item_code)
+    if db_item is None:
+        raise ValueError("Item code not found")
+
+    db_inventory_item = (
+        db.query(models.InventoryItem)
+        .filter(
+            models.InventoryItem.inventory_id == inventory_id,
+            models.InventoryItem.item_id == db_item.id,
+        )
+        .first()
+    )
+    if db_inventory_item is None:
+        db.add(models.InventoryItem(inventory_id=inventory_id, item_id=db_item.id, quantity=quantity))
+        return
+
+    db_inventory_item.quantity += quantity
+
+
+def upgrade_legacy_seed_inventory(db: Session, inventory: models.Inventory) -> bool:
+    legacy_seed_catalog = get_item_catalog_by_code(db, "seed_basic")
+    if legacy_seed_catalog is None:
+        return False
+
+    legacy_seed_item = (
+        db.query(models.InventoryItem)
+        .filter(
+            models.InventoryItem.inventory_id == inventory.id,
+            models.InventoryItem.item_id == legacy_seed_catalog.id,
+        )
+        .first()
+    )
+    if legacy_seed_item is None or legacy_seed_item.quantity <= 0:
+        return False
+
+    specific_seed_total = 0
+    for seed_code in ("seed_wheat", "seed_corn", "seed_soy"):
+        db_seed_catalog = get_item_catalog_by_code(db, seed_code)
+        if db_seed_catalog is None:
+            continue
+        db_seed_item = (
+            db.query(models.InventoryItem)
+            .filter(
+                models.InventoryItem.inventory_id == inventory.id,
+                models.InventoryItem.item_id == db_seed_catalog.id,
+            )
+            .first()
+        )
+        if db_seed_item is not None:
+            specific_seed_total += db_seed_item.quantity
+
+    if specific_seed_total == 0:
+        for seed_code, quantity in _distribute_legacy_seed_quantity(legacy_seed_item.quantity):
+            _upsert_inventory_item_quantity(db, inventory.id, seed_code, quantity)
+
+    db.delete(legacy_seed_item)
+    return True
 
 
 def create_player(db: Session, username: str, email: str, password: str) -> models.Player:
@@ -266,7 +401,7 @@ def bootstrap_inventory_items_from_legacy(db: Session, inventory: models.Invento
         return False
 
     legacy_items = [
-        ("seed_basic", max(0, int(inventory.seeds or 0))),
+        *_distribute_legacy_seed_quantity(max(0, int(inventory.seeds or 0))),
         ("water_basic", max(0, int(inventory.water or 0))),
         ("fertilizer_basic", max(0, int(inventory.fertilizer or 0))),
     ]
@@ -305,8 +440,9 @@ def get_or_create_inventory(db: Session, player_id: int) -> models.Inventory:
     catalog_changed = ensure_default_item_catalog(db)
     crop_types_changed = ensure_default_crop_types(db)
     bootstrap_changed = bootstrap_inventory_items_from_legacy(db, db_inventory)
+    legacy_seed_upgrade_changed = upgrade_legacy_seed_inventory(db, db_inventory)
 
-    if created_inventory or catalog_changed or crop_types_changed or bootstrap_changed:
+    if created_inventory or catalog_changed or crop_types_changed or bootstrap_changed or legacy_seed_upgrade_changed:
         db.commit()
         db.refresh(db_inventory)
 
@@ -396,7 +532,12 @@ def remove_item_from_inventory(
 
 def list_crop_types(db: Session) -> list[models.CropType]:
     ensure_default_crop_types(db)
-    return db.query(models.CropType).order_by(models.CropType.name.asc()).all()
+    return (
+        db.query(models.CropType)
+        .filter(models.CropType.code.in_(SUPPORTED_CROP_TYPE_CODES))
+        .order_by(models.CropType.name.asc())
+        .all()
+    )
 
 
 def list_player_crops(db: Session, player_id: int) -> list[models.PlayerCrop]:
@@ -414,6 +555,7 @@ def build_player_crop_response(player_crop: models.PlayerCrop) -> dict:
         "player_id": player_crop.player_id,
         "crop_type_code": player_crop.crop_type.code,
         "crop_type_name": player_crop.crop_type.name,
+        "product_item_code": player_crop.crop_type.product_item_code,
         "land_plot_id": player_crop.land_plot_id,
         "planted_at": player_crop.planted_at,
         "state": player_crop.state,
@@ -438,6 +580,10 @@ def plant_crop(
         raise ValueError("Crop type not found")
 
     remove_item_from_inventory(db, db_inventory, db_crop_type.seed_item_code, 1)
+
+    db_stats = get_stats_by_player_id(db, player.id)
+    if db_stats is not None:
+        db_stats.crops_planted += 1
 
     db_player_crop = models.PlayerCrop(
         player_id=player.id,

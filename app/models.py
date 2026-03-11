@@ -105,7 +105,8 @@ class CropType(Base):
     growth_time_seconds: Mapped[int] = mapped_column(Integer)
     yield_quantity: Mapped[int] = mapped_column(Integer, default=1)
     base_value: Mapped[float] = mapped_column(Float, default=0.0)
-    seed_item_code: Mapped[str] = mapped_column(String, default="seed_basic")
+    seed_item_code: Mapped[str] = mapped_column(String, default="seed_wheat")
+    product_item_code: Mapped[str] = mapped_column(String, default="wheat")
 
     crops: Mapped[list["PlayerCrop"]] = relationship(back_populates="crop_type")
 

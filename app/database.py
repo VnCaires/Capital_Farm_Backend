@@ -38,5 +38,7 @@ def run_startup_migrations() -> None:
         if "crop_types" in table_names:
             crop_type_columns = {col["name"] for col in inspector.get_columns("crop_types")}
             if "seed_item_code" not in crop_type_columns:
-                connection.execute(text("ALTER TABLE crop_types ADD COLUMN seed_item_code VARCHAR NOT NULL DEFAULT 'seed_basic'"))
+                connection.execute(text("ALTER TABLE crop_types ADD COLUMN seed_item_code VARCHAR NOT NULL DEFAULT 'seed_wheat'"))
+            if "product_item_code" not in crop_type_columns:
+                connection.execute(text("ALTER TABLE crop_types ADD COLUMN product_item_code VARCHAR NOT NULL DEFAULT 'wheat'"))
 

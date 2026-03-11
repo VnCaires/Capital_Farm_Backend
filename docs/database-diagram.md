@@ -69,6 +69,7 @@ erDiagram
         int yield_quantity
         float base_value
         string seed_item_code
+        string product_item_code
     }
 
     PLAYER_CROPS {
