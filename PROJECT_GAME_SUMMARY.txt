@@ -1,7 +1,7 @@
 PROJECT OVERVIEW - CAPITAL FARM BACKEND
 
 Purpose
-- Backend API for a farming game where players create accounts, manage identity and sessions, organize inventory, manage land, plant crops, grow them over time, harvest resources, and progress through an expanding production chain.
+- Backend API for a farming/production game where players create accounts, manage sessions, build wealth, manage land, plant crops, grow them over time, harvest resources, and progress through an expanding production chain.
 
 Current Tech Stack
 - Python + FastAPI
@@ -15,14 +15,15 @@ What Is Already Implemented
 - Token refresh and logout with token/session revocation
 - Protected routes via JWT validation
 - Player profile module with metadata and stats container
+- Wealth progression system based on player assets
 - Wallet deposit endpoint and wallet history endpoint
-- Structured inventory with item catalog, quantities, categories, and capacity limit
-- Land grid bootstrap and land state management
+- Unified player storage with item catalog, quantities, categories, and capacity limit
+- Land grid bootstrap with coordinate, occupancy, and expansion rules
 - Crop type catalog for the current stage (`wheat`, `corn`, `soy`)
 - Planting endpoint with crop-specific seed consumption and plot occupancy validation
 - Time-based crop growth state machine (`planted`, `growing`, `ready`)
 - Crop readiness endpoint and player crop listing
-- Harvest endpoint with inventory reward integration and plot release
+- Harvest endpoint with storage reward integration and plot release
 
 Core Domain So Far
 - Player
@@ -30,13 +31,15 @@ Core Domain So Far
 - PlayerProfile
   - player_id, display_name, avatar_url, created_at
 - PlayerStats
-  - games_played, crops_planted, crops_harvested, total_earnings, total_expenses
-- Inventory
-  - player_id, capacity model, item container
+  - games_played, crops_planted, crops_harvested, total_earnings, total_expenses, wealth_xp, max_wealth_xp, level
+- Storage
+  - player_id, capacity_limit
+- StorageItem
+  - storage_id, item_id, quantity
+- Legacy Inventory
+  - retained only for migration compatibility with older data
 - ItemCatalog
-  - code, name, category
-- InventoryItem
-  - inventory_id, item_id, quantity
+  - code, name, category, wealth_value
 - WalletTransaction
   - player_id, transaction_type, amount, created_at
 - LandPlot
@@ -78,41 +81,65 @@ Production Chain Reference
 - Full diagram reference: docs/item-flow-diagram.md
 
 API Behavior (current)
-- /register creates player, profile, stats, base inventory, and default land setup atomically
+- /register creates player, profile, stats, base storage, and default land setup atomically
 - /login returns bearer access token and refresh token
 - /token/refresh rotates refresh session and returns new tokens
 - /logout revokes active session and access token
 - /me returns authenticated player account data
 - /profile/me returns authenticated player profile and stats
+- /progression/me returns current wealth XP, max wealth XP, level, unlocks, and wealth breakdown
 - /wallet/deposit updates player balance
 - /wallet/history returns player-scoped financial ledger
-- /inventory/me returns structured inventory grouped by category
-- /land/me returns the player land grid
+- /storage/me returns the player storage grouped by category
+- /inventory/me is a compatibility alias that returns the same storage view
+- /inventory/items/add currently adds directly to storage and is still a development utility endpoint
+- /land/me returns the player land grid with width, height, map limits, occupied plot count, and embedded crop snapshots
+- /land/plots creates extra plots while preventing duplicate coordinates and invalid manual planted state
+- /land/expand buys an adjacent plot, deducts balance, records an expense transaction, and returns the updated grid
+- /land/plots/{plot_id}/state allows only safe manual soil-state changes on non-occupied plots
 - /crops/types returns available crop catalog for this game stage
 - /crops/plant validates land + crop-specific seed and persists planting
 - /crops/me returns player-owned crop records with growth metrics
 - /crops/{crop_id}/state returns the synchronized crop lifecycle state
-- /crops/{crop_id}/harvest validates readiness, rewards output, and frees the plot
+- /crops/{crop_id}/harvest validates readiness, rewards output into storage, and frees the plot
 
 Crop Lifecycle Behavior (current)
 - Planting stores the crop on a specific `land_plot_id`
 - Growth is deterministic and derived from `planted_at` + `growth_time_seconds`
 - States transition logically across `planted`, `growing`, and `ready`
-- Harvest changes the crop to `harvested`
+- Harvest returns the configured crop output to storage
 - Harvested crops cannot be harvested again
 - Harvest releases the associated land plot back to `empty`
 
+Land Grid Rules (current)
+- Plot coordinates are unique per player
+- Expansion purchases must be adjacent to owned land
+- Expansion cannot exceed configured map width/height limits
+- Occupancy is enforced during planting
+- `planted` is reserved for crop actions and cannot be set manually through land editing endpoints
+- Occupied plots cannot be manually changed until the crop is harvested
+- `/land/me` is the main farm-rendering endpoint for the client because each occupied plot can include its current crop snapshot
+
+Wealth Progression Rules (current)
+- `wealth_xp` represents the player's current wealth and can go down
+- `max_wealth_xp` stores the highest wealth ever achieved
+- `level` is derived from `max_wealth_xp`, so unlocked level milestones are preserved
+- Wealth currently includes:
+  - wallet balance
+  - items in storage
+  - value of active planted crops
+
 Project Direction (from planning)
-- C2: progression, warehouse, planting expansion, replanting, multi-harvest
-- C4: animals (production, feeding, reproduction)
-- Mid-term economy loop: crop processing, workers, machines, fuel, fertilizer feedback loop
-- Later stages: market dynamics, multiplayer/social, analytics, Unity integration
+- Remaining pre-Unity backend work should focus on farm expansion, pricing/economy rules, transaction safety, and API stability
+- Animal systems, market dynamics, multiplayer/social, analytics, and Unity integration remain later milestones
+- Development utilities should gradually be replaced by final product actions as the game loop becomes fully server-authoritative
 
 Operational Notes for Codex
 - Use venv at ./venv
 - Start server with: python -m uvicorn app.main:app --reload
 - Keep SECRET_KEY configured by environment when possible
-- Prefer transaction-safe writes for player economy, inventory, land, crop, and harvest operations
+- Prefer transaction-safe writes for player economy, storage, land, crop, and harvest operations
+- Treat `/land/me` as the primary farm snapshot endpoint for client rendering
 
 Repository Conventions
 - Keep this file as AI context bootstrap only

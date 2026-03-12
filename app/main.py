@@ -334,6 +334,22 @@ def create_land_plot(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/land/expand", response_model=schemas.LandExpansionResponse)
+def expand_my_land(
+    payload: schemas.LandExpansionRequest,
+    username: str = Depends(auth.get_current_username),
+    db: Session = Depends(get_db),
+):
+    db_player = crud.get_player_by_username(db, username)
+    if db_player is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    try:
+        return crud.expand_land_grid(db, db_player, payload.x, payload.y, payload.soil_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.patch("/land/plots/{plot_id}/state", response_model=schemas.LandPlotResponse)
 def update_land_plot_state(
     plot_id: int,

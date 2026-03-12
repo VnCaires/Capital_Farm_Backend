@@ -218,8 +218,10 @@ class LandPlotCreateRequest(BaseModel):
     state: str = "empty"
 
 
-class LandPlotStateUpdateRequest(BaseModel):
-    state: str
+class LandExpansionRequest(BaseModel):
+    x: int = Field(ge=0)
+    y: int = Field(ge=0)
+    soil_type: str = "loam"
 
 
 class LandPlotResponse(BaseModel):
@@ -244,7 +246,16 @@ class LandGridResponse(BaseModel):
     occupied_plots: int
     width: int
     height: int
+    max_width: int
+    max_height: int
     plots: list[LandPlotResponse]
+
+
+class LandExpansionResponse(BaseModel):
+    price_paid: float
+    balance: float
+    plot: LandPlotResponse
+    grid: LandGridResponse
 
 
 class PlayerResponse(BaseModel):
@@ -256,3 +267,4 @@ class PlayerResponse(BaseModel):
 
     class Config:
         from_attributes = True
+

@@ -14,6 +14,10 @@ ALLOWED_CROP_STATES = {"planted", "growing", "ready", "harvested"}
 STORAGE_CAPACITY_LIMIT = 300
 DEFAULT_LAND_WIDTH = 3
 DEFAULT_LAND_HEIGHT = 3
+MAX_LAND_WIDTH = 6
+MAX_LAND_HEIGHT = 6
+LAND_EXPANSION_BASE_PRICE = 50.0
+LAND_EXPANSION_STEP_PRICE = 15.0
 DEFAULT_SOIL_TYPE = "loam"
 DEFAULT_ITEM_CATALOG: list[tuple[str, str, str, float]] = [
     ("seed_wheat", "Semente de Trigo", "seed", 2.0),
@@ -898,6 +902,8 @@ def build_land_grid_response(db: Session, player_id: int, land_plots: list[model
             "occupied_plots": 0,
             "width": 0,
             "height": 0,
+            "max_width": MAX_LAND_WIDTH,
+            "max_height": MAX_LAND_HEIGHT,
             "plots": [],
         }
 
@@ -911,6 +917,8 @@ def build_land_grid_response(db: Session, player_id: int, land_plots: list[model
         "occupied_plots": occupied_plots,
         "width": (max(x_values) - min(x_values)) + 1,
         "height": (max(y_values) - min(y_values)) + 1,
+        "max_width": MAX_LAND_WIDTH,
+        "max_height": MAX_LAND_HEIGHT,
         "plots": [build_land_plot_response(db, land_plot) for land_plot in land_plots],
     }
 
@@ -1062,6 +1070,73 @@ def list_land_plots_by_player_id(db: Session, player_id: int) -> list[models.Lan
         .order_by(models.LandPlot.y.asc(), models.LandPlot.x.asc())
         .all()
     )
+
+
+def get_land_expansion_price(current_total_plots: int) -> float:
+    extra_plots_owned = max(0, current_total_plots - (DEFAULT_LAND_WIDTH * DEFAULT_LAND_HEIGHT))
+    return _round_wealth(LAND_EXPANSION_BASE_PRICE + (extra_plots_owned * LAND_EXPANSION_STEP_PRICE))
+
+
+def _is_adjacent_to_owned_plot(db: Session, player_id: int, x: int, y: int) -> bool:
+    adjacent_coordinates = ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1))
+    return any(
+        get_land_plot_by_coordinates(db, player_id, adjacent_x, adjacent_y) is not None
+        for adjacent_x, adjacent_y in adjacent_coordinates
+    )
+
+
+def expand_land_grid(
+    db: Session,
+    player: models.Player,
+    x: int,
+    y: int,
+    soil_type: str = DEFAULT_SOIL_TYPE,
+) -> dict:
+    if x < 0 or y < 0:
+        raise ValueError("Plot coordinates must be non-negative")
+    if x >= MAX_LAND_WIDTH or y >= MAX_LAND_HEIGHT:
+        raise ValueError("Expansion cannot exceed configured map limit")
+    if get_land_plot_by_coordinates(db, player.id, x, y) is not None:
+        raise ValueError("Plot coordinates already in use")
+    if not _is_adjacent_to_owned_plot(db, player.id, x, y):
+        raise ValueError("Expansion must be adjacent to an existing plot")
+
+    expansion_price = get_land_expansion_price(len(get_or_create_land_plots(db, player.id)))
+    if player.balance < expansion_price:
+        raise ValueError("Insufficient balance for expansion")
+
+    normalized_soil_type = soil_type.strip().lower()
+    if not normalized_soil_type:
+        raise ValueError("Invalid soil type")
+
+    player.balance = _round_wealth(player.balance - expansion_price)
+    create_wallet_transaction(db, player.id, expansion_price, "expense")
+
+    db_stats = get_stats_by_player_id(db, player.id)
+    if db_stats is not None:
+        db_stats.total_expenses = _round_wealth(db_stats.total_expenses + expansion_price)
+
+    db_plot = models.LandPlot(
+        player_id=player.id,
+        x=x,
+        y=y,
+        soil_type=normalized_soil_type,
+        state="empty",
+        is_occupied=False,
+    )
+    db.add(db_plot)
+    sync_player_wealth_stats(db, player)
+    db.commit()
+    db.refresh(player)
+    db.refresh(db_plot)
+
+    land_plots = list_land_plots_by_player_id(db, player.id)
+    return {
+        "price_paid": expansion_price,
+        "balance": player.balance,
+        "plot": build_land_plot_response(db, db_plot),
+        "grid": build_land_grid_response(db, player.id, land_plots),
+    }
 
 
 def bootstrap_default_land_plots(
