@@ -74,6 +74,22 @@ class InventoryResponse(BaseModel):
     categories: list[InventoryCategoryResponse]
 
 
+class WarehouseResponse(BaseModel):
+    id: int
+    player_id: int
+    capacity_limit: int
+    total_quantity: int
+    categories: list[InventoryCategoryResponse]
+
+
+class WarehouseTransferRequest(BaseModel):
+    item_code: str
+    quantity: int = Field(gt=0)
+
+
+class WarehouseTransferResponse(BaseModel):
+    inventory: InventoryResponse
+    warehouse: WarehouseResponse
 
 
 class PlayerStatsResponse(BaseModel):
@@ -93,6 +109,7 @@ class PlayerStatsResponse(BaseModel):
 class ProgressionBreakdownResponse(BaseModel):
     balance_wealth: float
     inventory_wealth: float
+    warehouse_wealth: float
     planted_crops_wealth: float
     total_wealth_xp: float
 

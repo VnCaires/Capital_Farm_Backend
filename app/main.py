@@ -224,6 +224,52 @@ def add_inventory_item(
     return crud.get_inventory_structured(db, db_inventory)
 
 
+@app.get("/warehouse/me", response_model=schemas.WarehouseResponse)
+def get_my_warehouse(username: str = Depends(auth.get_current_username), db: Session = Depends(get_db)):
+    db_player = crud.get_player_by_username(db, username)
+    if db_player is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    db_warehouse = crud.get_or_create_warehouse(db, db_player.id)
+    return crud.get_warehouse_structured(db, db_warehouse)
+
+
+@app.post("/warehouse/transfer/in", response_model=schemas.WarehouseTransferResponse)
+def transfer_inventory_into_warehouse(
+    payload: schemas.WarehouseTransferRequest,
+    username: str = Depends(auth.get_current_username),
+    db: Session = Depends(get_db),
+):
+    db_player = crud.get_player_by_username(db, username)
+    if db_player is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    try:
+        inventory, warehouse = crud.transfer_inventory_to_warehouse(db, db_player, payload.item_code, payload.quantity)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"inventory": inventory, "warehouse": warehouse}
+
+
+@app.post("/warehouse/transfer/out", response_model=schemas.WarehouseTransferResponse)
+def transfer_warehouse_into_inventory(
+    payload: schemas.WarehouseTransferRequest,
+    username: str = Depends(auth.get_current_username),
+    db: Session = Depends(get_db),
+):
+    db_player = crud.get_player_by_username(db, username)
+    if db_player is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    try:
+        inventory, warehouse = crud.transfer_warehouse_to_inventory(db, db_player, payload.item_code, payload.quantity)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"inventory": inventory, "warehouse": warehouse}
+
+
 @app.get("/crops/types", response_model=list[schemas.CropTypeResponse])
 def get_crop_types(db: Session = Depends(get_db)):
     return crud.list_crop_types(db)
