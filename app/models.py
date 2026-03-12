@@ -16,7 +16,7 @@ class Player(Base):
     hashed_password: Mapped[str] = mapped_column(String)
     balance: Mapped[float] = mapped_column(Float, default=100.0)
     inventory: Mapped["Inventory"] = relationship(back_populates="player", uselist=False)
-    warehouse: Mapped["Warehouse"] = relationship(back_populates="player", uselist=False)
+    storage: Mapped["Storage"] = relationship(back_populates="player", uselist=False)
     profile: Mapped["PlayerProfile"] = relationship(back_populates="player", uselist=False)
     stats: Mapped["PlayerStats"] = relationship(back_populates="player", uselist=False)
     wallet_transactions: Mapped[list["WalletTransaction"]] = relationship(back_populates="player")
@@ -61,27 +61,27 @@ class InventoryItem(Base):
     item: Mapped[ItemCatalog] = relationship(back_populates="inventory_items")
 
 
-class Warehouse(Base):
-    __tablename__ = "warehouses"
+class Storage(Base):
+    __tablename__ = "storages"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), unique=True, index=True)
     capacity_limit: Mapped[int] = mapped_column(Integer, default=300)
 
-    player: Mapped[Player] = relationship(back_populates="warehouse")
-    items: Mapped[list["WarehouseItem"]] = relationship(back_populates="warehouse", cascade="all, delete-orphan")
+    player: Mapped[Player] = relationship(back_populates="storage")
+    items: Mapped[list["StorageItem"]] = relationship(back_populates="storage", cascade="all, delete-orphan")
 
 
-class WarehouseItem(Base):
-    __tablename__ = "warehouse_items"
-    __table_args__ = (UniqueConstraint("warehouse_id", "item_id", name="uq_warehouse_item"),)
+class StorageItem(Base):
+    __tablename__ = "storage_items"
+    __table_args__ = (UniqueConstraint("storage_id", "item_id", name="uq_storage_item"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    warehouse_id: Mapped[int] = mapped_column(ForeignKey("warehouses.id"), index=True)
+    storage_id: Mapped[int] = mapped_column(ForeignKey("storages.id"), index=True)
     item_id: Mapped[int] = mapped_column(ForeignKey("item_catalog.id"), index=True)
     quantity: Mapped[int] = mapped_column(Integer, default=0)
 
-    warehouse: Mapped[Warehouse] = relationship(back_populates="items")
+    storage: Mapped[Storage] = relationship(back_populates="items")
     item: Mapped[ItemCatalog] = relationship()
 
 

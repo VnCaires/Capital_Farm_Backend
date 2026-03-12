@@ -194,17 +194,17 @@ def wallet_history(
     return crud.get_wallet_history_by_player_id(db, db_player.id, limit=limit, offset=offset)
 
 
-@app.get("/inventory/me", response_model=schemas.InventoryResponse)
+@app.get("/inventory/me", response_model=schemas.StorageResponse)
 def get_my_inventory(username: str = Depends(auth.get_current_username), db: Session = Depends(get_db)):
     db_player = crud.get_player_by_username(db, username)
     if db_player is None:
         raise HTTPException(status_code=404, detail="Player not found")
 
-    db_inventory = crud.get_or_create_inventory(db, db_player.id)
-    return crud.get_inventory_structured(db, db_inventory)
+    db_storage = crud.get_or_create_storage(db, db_player.id)
+    return crud.get_storage_structured(db, db_storage)
 
 
-@app.post("/inventory/items/add", response_model=schemas.InventoryResponse)
+@app.post("/inventory/items/add", response_model=schemas.StorageResponse)
 def add_inventory_item(
     payload: schemas.InventoryAddItemRequest,
     username: str = Depends(auth.get_current_username),
@@ -214,60 +214,24 @@ def add_inventory_item(
     if db_player is None:
         raise HTTPException(status_code=404, detail="Player not found")
 
-    db_inventory = crud.get_or_create_inventory(db, db_player.id)
+    db_storage = crud.get_or_create_storage(db, db_player.id)
 
     try:
-        crud.add_item_to_inventory(db, db_inventory, payload.item_code, payload.quantity)
+        crud.add_item_to_storage(db, db_storage, payload.item_code, payload.quantity)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return crud.get_inventory_structured(db, db_inventory)
+    return crud.get_storage_structured(db, db_storage)
 
 
-@app.get("/warehouse/me", response_model=schemas.WarehouseResponse)
-def get_my_warehouse(username: str = Depends(auth.get_current_username), db: Session = Depends(get_db)):
+@app.get("/storage/me", response_model=schemas.StorageResponse)
+def get_my_storage(username: str = Depends(auth.get_current_username), db: Session = Depends(get_db)):
     db_player = crud.get_player_by_username(db, username)
     if db_player is None:
         raise HTTPException(status_code=404, detail="Player not found")
 
-    db_warehouse = crud.get_or_create_warehouse(db, db_player.id)
-    return crud.get_warehouse_structured(db, db_warehouse)
-
-
-@app.post("/warehouse/transfer/in", response_model=schemas.WarehouseTransferResponse)
-def transfer_inventory_into_warehouse(
-    payload: schemas.WarehouseTransferRequest,
-    username: str = Depends(auth.get_current_username),
-    db: Session = Depends(get_db),
-):
-    db_player = crud.get_player_by_username(db, username)
-    if db_player is None:
-        raise HTTPException(status_code=404, detail="Player not found")
-
-    try:
-        inventory, warehouse = crud.transfer_inventory_to_warehouse(db, db_player, payload.item_code, payload.quantity)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    return {"inventory": inventory, "warehouse": warehouse}
-
-
-@app.post("/warehouse/transfer/out", response_model=schemas.WarehouseTransferResponse)
-def transfer_warehouse_into_inventory(
-    payload: schemas.WarehouseTransferRequest,
-    username: str = Depends(auth.get_current_username),
-    db: Session = Depends(get_db),
-):
-    db_player = crud.get_player_by_username(db, username)
-    if db_player is None:
-        raise HTTPException(status_code=404, detail="Player not found")
-
-    try:
-        inventory, warehouse = crud.transfer_warehouse_to_inventory(db, db_player, payload.item_code, payload.quantity)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    return {"inventory": inventory, "warehouse": warehouse}
+    db_storage = crud.get_or_create_storage(db, db_player.id)
+    return crud.get_storage_structured(db, db_storage)
 
 
 @app.get("/crops/types", response_model=list[schemas.CropTypeResponse])
@@ -330,11 +294,11 @@ def harvest_my_crop(
         raise HTTPException(status_code=404, detail="Player not found")
 
     try:
-        harvested_crop, inventory = crud.harvest_crop(db, db_player, crop_id)
+        harvested_crop, storage = crud.harvest_crop(db, db_player, crop_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return {"crop": harvested_crop, "inventory": inventory}
+    return {"crop": harvested_crop, "storage": storage}
 
 
 @app.get("/land/me", response_model=schemas.LandGridResponse)

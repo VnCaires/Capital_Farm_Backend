@@ -20,6 +20,23 @@ def run_startup_migrations() -> None:
         inspector = inspect(connection)
         table_names = set(inspector.get_table_names())
 
+        if "warehouses" in table_names and "storages" not in table_names:
+            connection.execute(text("ALTER TABLE warehouses RENAME TO storages"))
+            inspector = inspect(connection)
+            table_names = set(inspector.get_table_names())
+
+        if "warehouse_items" in table_names and "storage_items" not in table_names:
+            connection.execute(text("ALTER TABLE warehouse_items RENAME TO storage_items"))
+            inspector = inspect(connection)
+            table_names = set(inspector.get_table_names())
+
+        if "storage_items" in table_names:
+            storage_item_columns = {col["name"] for col in inspector.get_columns("storage_items")}
+            if "warehouse_id" in storage_item_columns and "storage_id" not in storage_item_columns:
+                connection.execute(text("ALTER TABLE storage_items RENAME COLUMN warehouse_id TO storage_id"))
+                inspector = inspect(connection)
+                table_names = set(inspector.get_table_names())
+
         if "players" in table_names:
             player_columns = {col["name"] for col in inspector.get_columns("players")}
             if "email" not in player_columns:

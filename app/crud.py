@@ -11,8 +11,7 @@ from . import auth, models
 ALLOWED_TRANSACTION_TYPES = {"deposit", "expense"}
 ALLOWED_LAND_STATES = {"empty", "plowed", "planted"}
 ALLOWED_CROP_STATES = {"planted", "growing", "ready", "harvested"}
-INVENTORY_CAPACITY_LIMIT = 100
-WAREHOUSE_CAPACITY_LIMIT = 300
+STORAGE_CAPACITY_LIMIT = 300
 DEFAULT_LAND_WIDTH = 3
 DEFAULT_LAND_HEIGHT = 3
 DEFAULT_SOIL_TYPE = "loam"
@@ -98,21 +97,11 @@ def get_unlocked_features(level: int) -> list[str]:
     return [feature for required_level, feature in PROGRESSION_UNLOCKS if level >= required_level]
 
 
-def _compute_inventory_wealth(db: Session, inventory_id: int) -> float:
+def _compute_storage_wealth(db: Session, storage_id: int) -> float:
     total = (
-        db.query(func.coalesce(func.sum(models.InventoryItem.quantity * models.ItemCatalog.wealth_value), 0.0))
-        .join(models.ItemCatalog, models.InventoryItem.item_id == models.ItemCatalog.id)
-        .filter(models.InventoryItem.inventory_id == inventory_id)
-        .scalar()
-    )
-    return _round_wealth(total or 0.0)
-
-
-def _compute_warehouse_wealth(db: Session, warehouse_id: int) -> float:
-    total = (
-        db.query(func.coalesce(func.sum(models.WarehouseItem.quantity * models.ItemCatalog.wealth_value), 0.0))
-        .join(models.ItemCatalog, models.WarehouseItem.item_id == models.ItemCatalog.id)
-        .filter(models.WarehouseItem.warehouse_id == warehouse_id)
+        db.query(func.coalesce(func.sum(models.StorageItem.quantity * models.ItemCatalog.wealth_value), 0.0))
+        .join(models.ItemCatalog, models.StorageItem.item_id == models.ItemCatalog.id)
+        .filter(models.StorageItem.storage_id == storage_id)
         .scalar()
     )
     return _round_wealth(total or 0.0)
@@ -137,23 +126,19 @@ def sync_player_wealth_stats(db: Session, player: models.Player) -> models.Playe
         db.add(db_stats)
         db.flush()
 
-    db_inventory = get_inventory_by_player_id(db, player.id)
-    if db_inventory is None:
-        db_inventory = models.Inventory(player_id=player.id)
-        db.add(db_inventory)
-        db.flush()
+    db_storage = get_or_create_storage(db, player.id, commit=False)
+    migrate_inventory_items_to_storage(db, player.id, db_storage)
 
-    db_warehouse = get_warehouse_by_player_id(db, player.id)
-    if db_warehouse is None:
-        db_warehouse = models.Warehouse(player_id=player.id, capacity_limit=WAREHOUSE_CAPACITY_LIMIT)
-        db.add(db_warehouse)
+    db_storage = get_storage_by_player_id(db, player.id)
+    if db_storage is None:
+        db_storage = models.Storage(player_id=player.id, capacity_limit=STORAGE_CAPACITY_LIMIT)
+        db.add(db_storage)
         db.flush()
 
     balance_wealth = _round_wealth(player.balance)
-    inventory_wealth = _compute_inventory_wealth(db, db_inventory.id)
-    warehouse_wealth = _compute_warehouse_wealth(db, db_warehouse.id)
+    storage_wealth = _compute_storage_wealth(db, db_storage.id)
     planted_crops_wealth = _compute_planted_crops_wealth(db, player.id)
-    wealth_xp = _round_wealth(balance_wealth + inventory_wealth + warehouse_wealth + planted_crops_wealth)
+    wealth_xp = _round_wealth(balance_wealth + storage_wealth + planted_crops_wealth)
 
     db_stats.wealth_xp = wealth_xp
     db_stats.max_wealth_xp = _round_wealth(max(db_stats.max_wealth_xp, wealth_xp))
@@ -163,10 +148,8 @@ def sync_player_wealth_stats(db: Session, player: models.Player) -> models.Playe
 
 
 def build_progression_response(db: Session, player: models.Player, stats: models.PlayerStats) -> dict:
-    db_inventory = get_inventory_by_player_id(db, player.id)
-    db_warehouse = get_warehouse_by_player_id(db, player.id)
-    inventory_wealth = _compute_inventory_wealth(db, db_inventory.id) if db_inventory is not None else 0.0
-    warehouse_wealth = _compute_warehouse_wealth(db, db_warehouse.id) if db_warehouse is not None else 0.0
+    db_storage = get_or_create_storage(db, player.id)
+    storage_wealth = _compute_storage_wealth(db, db_storage.id)
     planted_crops_wealth = _compute_planted_crops_wealth(db, player.id)
     balance_wealth = _round_wealth(player.balance)
 
@@ -180,10 +163,9 @@ def build_progression_response(db: Session, player: models.Player, stats: models
         "unlocked_features": get_unlocked_features(stats.level),
         "breakdown": {
             "balance_wealth": balance_wealth,
-            "inventory_wealth": inventory_wealth,
-            "warehouse_wealth": warehouse_wealth,
+            "storage_wealth": storage_wealth,
             "planted_crops_wealth": planted_crops_wealth,
-            "total_wealth_xp": _round_wealth(balance_wealth + inventory_wealth + warehouse_wealth + planted_crops_wealth),
+            "total_wealth_xp": _round_wealth(balance_wealth + storage_wealth + planted_crops_wealth),
         },
     }
 
@@ -354,6 +336,7 @@ def _upsert_inventory_item_quantity(
     if quantity <= 0:
         return
 
+    db.flush()
     db_item = get_item_catalog_by_code(db, item_code)
     if db_item is None:
         raise ValueError("Item code not found")
@@ -373,32 +356,33 @@ def _upsert_inventory_item_quantity(
     db_inventory_item.quantity += quantity
 
 
-def _upsert_warehouse_item_quantity(
+def _upsert_storage_item_quantity(
     db: Session,
-    warehouse_id: int,
+    storage_id: int,
     item_code: str,
     quantity: int,
 ) -> None:
     if quantity <= 0:
         return
 
+    db.flush()
     db_item = get_item_catalog_by_code(db, item_code)
     if db_item is None:
         raise ValueError("Item code not found")
 
-    db_warehouse_item = (
-        db.query(models.WarehouseItem)
+    db_storage_item = (
+        db.query(models.StorageItem)
         .filter(
-            models.WarehouseItem.warehouse_id == warehouse_id,
-            models.WarehouseItem.item_id == db_item.id,
+            models.StorageItem.storage_id == storage_id,
+            models.StorageItem.item_id == db_item.id,
         )
         .first()
     )
-    if db_warehouse_item is None:
-        db.add(models.WarehouseItem(warehouse_id=warehouse_id, item_id=db_item.id, quantity=quantity))
+    if db_storage_item is None:
+        db.add(models.StorageItem(storage_id=storage_id, item_id=db_item.id, quantity=quantity))
         return
 
-    db_warehouse_item.quantity += quantity
+    db_storage_item.quantity += quantity
 
 
 def upgrade_legacy_seed_inventory(db: Session, inventory: models.Inventory) -> bool:
@@ -437,6 +421,7 @@ def upgrade_legacy_seed_inventory(db: Session, inventory: models.Inventory) -> b
         for seed_code, quantity in _distribute_legacy_seed_quantity(legacy_seed_item.quantity):
             _upsert_inventory_item_quantity(db, inventory.id, seed_code, quantity)
 
+    db.flush()
     db.delete(legacy_seed_item)
     return True
 
@@ -455,16 +440,14 @@ def create_player(db: Session, username: str, email: str, password: str) -> mode
         db.add(db_player)
         db.flush()
 
-        db_inventory = models.Inventory(player_id=db_player.id)
-        db_warehouse = models.Warehouse(player_id=db_player.id, capacity_limit=WAREHOUSE_CAPACITY_LIMIT)
+        db_storage = models.Storage(player_id=db_player.id, capacity_limit=STORAGE_CAPACITY_LIMIT)
         db_profile = models.PlayerProfile(
             player_id=db_player.id,
             display_name=username,
             avatar_url="",
         )
         db_stats = models.PlayerStats(player_id=db_player.id)
-        db.add(db_inventory)
-        db.add(db_warehouse)
+        db.add(db_storage)
         db.add(db_profile)
         db.add(db_stats)
         db.flush()
@@ -472,7 +455,7 @@ def create_player(db: Session, username: str, email: str, password: str) -> mode
 
         ensure_default_item_catalog(db)
         ensure_default_crop_types(db)
-        bootstrap_inventory_items_from_legacy(db, db_inventory)
+        bootstrap_storage_items_from_legacy_defaults(db, db_storage)
         sync_player_wealth_stats(db, db_player)
 
         db.commit()
@@ -611,25 +594,14 @@ def get_inventory_by_player_id(db: Session, player_id: int) -> models.Inventory 
     return db.query(models.Inventory).filter(models.Inventory.player_id == player_id).first()
 
 
-def get_warehouse_by_player_id(db: Session, player_id: int) -> models.Warehouse | None:
-    return db.query(models.Warehouse).filter(models.Warehouse.player_id == player_id).first()
+def get_storage_by_player_id(db: Session, player_id: int) -> models.Storage | None:
+    return db.query(models.Storage).filter(models.Storage.player_id == player_id).first()
 
 
-def get_or_create_warehouse(db: Session, player_id: int) -> models.Warehouse:
-    db_warehouse = get_warehouse_by_player_id(db, player_id)
-    if db_warehouse is None:
-        db_warehouse = models.Warehouse(player_id=player_id, capacity_limit=WAREHOUSE_CAPACITY_LIMIT)
-        db.add(db_warehouse)
-        db.commit()
-        db.refresh(db_warehouse)
-
-    return db_warehouse
-
-
-def bootstrap_inventory_items_from_legacy(db: Session, inventory: models.Inventory) -> bool:
+def bootstrap_storage_items_from_legacy_defaults(db: Session, storage: models.Storage) -> bool:
     has_items = (
-        db.query(models.InventoryItem)
-        .filter(models.InventoryItem.inventory_id == inventory.id)
+        db.query(models.StorageItem)
+        .filter(models.StorageItem.storage_id == storage.id)
         .first()
         is not None
     )
@@ -637,102 +609,148 @@ def bootstrap_inventory_items_from_legacy(db: Session, inventory: models.Invento
         return False
 
     legacy_items = [
-        *_distribute_legacy_seed_quantity(max(0, int(inventory.seeds or 0))),
-        ("water_basic", max(0, int(inventory.water or 0))),
-        ("fertilizer_basic", max(0, int(inventory.fertilizer or 0))),
+        *_distribute_legacy_seed_quantity(10),
+        ("water_basic", 5),
+        ("fertilizer_basic", 3),
     ]
 
     changed = False
     for code, quantity in legacy_items:
         if quantity <= 0:
             continue
-
-        db_catalog = get_item_catalog_by_code(db, code)
-        if db_catalog is None:
-            continue
-
-        db.add(
-            models.InventoryItem(
-                inventory_id=inventory.id,
-                item_id=db_catalog.id,
-                quantity=quantity,
-            )
-        )
+        _upsert_storage_item_quantity(db, storage.id, code, quantity)
         changed = True
 
     return changed
 
 
-def get_or_create_inventory(db: Session, player_id: int) -> models.Inventory:
+def migrate_inventory_items_to_storage(
+    db: Session,
+    player_id: int,
+    storage: models.Storage | None = None,
+) -> bool:
     db_inventory = get_inventory_by_player_id(db, player_id)
-    created_inventory = False
-
     if db_inventory is None:
-        db_inventory = models.Inventory(player_id=player_id)
-        db.add(db_inventory)
+        return False
+
+    db_storage = storage or get_storage_by_player_id(db, player_id)
+    if db_storage is None:
+        db_storage = models.Storage(player_id=player_id, capacity_limit=STORAGE_CAPACITY_LIMIT)
+        db.add(db_storage)
         db.flush()
-        created_inventory = True
+
+    rows = (
+        db.query(models.InventoryItem, models.ItemCatalog)
+        .join(models.ItemCatalog, models.InventoryItem.item_id == models.ItemCatalog.id)
+        .filter(models.InventoryItem.inventory_id == db_inventory.id)
+        .all()
+    )
+
+    changed = False
+    inventory_items_to_delete: list[models.InventoryItem] = []
+    if rows:
+        for inventory_item, catalog_item in rows:
+            inventory_items_to_delete.append(inventory_item)
+            if inventory_item.quantity <= 0:
+                continue
+            _upsert_storage_item_quantity(db, db_storage.id, catalog_item.code, inventory_item.quantity)
+            changed = True
+
+        db.flush()
+        for inventory_item in inventory_items_to_delete:
+            db.delete(inventory_item)
+
+    if not rows:
+        legacy_items = [
+            *_distribute_legacy_seed_quantity(max(0, int(db_inventory.seeds or 0))),
+            ("water_basic", max(0, int(db_inventory.water or 0))),
+            ("fertilizer_basic", max(0, int(db_inventory.fertilizer or 0))),
+        ]
+        for item_code, quantity in legacy_items:
+            if quantity <= 0:
+                continue
+            _upsert_storage_item_quantity(db, db_storage.id, item_code, quantity)
+            changed = True
+
+    if changed:
+        db_inventory.seeds = 0
+        db_inventory.water = 0
+        db_inventory.fertilizer = 0
+
+    return changed
+
+
+def get_or_create_storage(db: Session, player_id: int, *, commit: bool = True) -> models.Storage:
+    db_storage = get_storage_by_player_id(db, player_id)
+    created = False
+    if db_storage is None:
+        db_storage = models.Storage(player_id=player_id, capacity_limit=STORAGE_CAPACITY_LIMIT)
+        db.add(db_storage)
+        db.flush()
+        created = True
 
     catalog_changed = ensure_default_item_catalog(db)
     crop_types_changed = ensure_default_crop_types(db)
-    bootstrap_changed = bootstrap_inventory_items_from_legacy(db, db_inventory)
-    legacy_seed_upgrade_changed = upgrade_legacy_seed_inventory(db, db_inventory)
+    migrated_inventory_changed = migrate_inventory_items_to_storage(db, player_id, db_storage)
+    bootstrap_changed = False
+    if created and not migrated_inventory_changed:
+        bootstrap_changed = bootstrap_storage_items_from_legacy_defaults(db, db_storage)
 
-    if created_inventory or catalog_changed or crop_types_changed or bootstrap_changed or legacy_seed_upgrade_changed:
+    if commit and (created or catalog_changed or crop_types_changed or bootstrap_changed or migrated_inventory_changed):
         db.commit()
-        db.refresh(db_inventory)
+        db.refresh(db_storage)
 
-    return db_inventory
+    return db_storage
 
 
-def get_inventory_total_quantity(db: Session, inventory_id: int) -> int:
+def get_storage_total_quantity(db: Session, storage_id: int) -> int:
     total_quantity = (
-        db.query(func.coalesce(func.sum(models.InventoryItem.quantity), 0))
-        .filter(models.InventoryItem.inventory_id == inventory_id)
+        db.query(func.coalesce(func.sum(models.StorageItem.quantity), 0))
+        .filter(models.StorageItem.storage_id == storage_id)
         .scalar()
     )
     return int(total_quantity or 0)
 
 
-def get_warehouse_total_quantity(db: Session, warehouse_id: int) -> int:
-    total_quantity = (
-        db.query(func.coalesce(func.sum(models.WarehouseItem.quantity), 0))
-        .filter(models.WarehouseItem.warehouse_id == warehouse_id)
-        .scalar()
-    )
-    return int(total_quantity or 0)
-
-
-def get_inventory_item_quantity(db: Session, inventory: models.Inventory, item_code: str) -> int:
+def get_storage_item_quantity(db: Session, storage: models.Storage, item_code: str) -> int:
     db_item = get_item_catalog_by_code(db, item_code)
     if db_item is None:
         return 0
 
-    db_inventory_item = (
-        db.query(models.InventoryItem)
+    db_storage_item = (
+        db.query(models.StorageItem)
         .filter(
-            models.InventoryItem.inventory_id == inventory.id,
-            models.InventoryItem.item_id == db_item.id,
+            models.StorageItem.storage_id == storage.id,
+            models.StorageItem.item_id == db_item.id,
         )
         .first()
     )
-    return int(db_inventory_item.quantity if db_inventory_item is not None else 0)
+    return int(db_storage_item.quantity if db_storage_item is not None else 0)
 
 
-def get_warehouse_item_quantity(db: Session, warehouse: models.Warehouse, item_code: str) -> int:
-    db_item = get_item_catalog_by_code(db, item_code)
-    if db_item is None:
-        return 0
+def add_item_to_storage(
+    db: Session,
+    storage: models.Storage,
+    item_code: str,
+    quantity: int,
+    *,
+    commit: bool = True,
+) -> None:
+    if quantity <= 0:
+        raise ValueError("Quantity must be greater than zero")
 
-    db_warehouse_item = (
-        db.query(models.WarehouseItem)
-        .filter(
-            models.WarehouseItem.warehouse_id == warehouse.id,
-            models.WarehouseItem.item_id == db_item.id,
-        )
-        .first()
-    )
-    return int(db_warehouse_item.quantity if db_warehouse_item is not None else 0)
+    ensure_default_item_catalog(db)
+    current_total = get_storage_total_quantity(db, storage.id)
+    if current_total + quantity > storage.capacity_limit:
+        raise ValueError("Storage capacity exceeded")
+
+    _upsert_storage_item_quantity(db, storage.id, item_code, quantity)
+
+    if commit:
+        db_player = db.query(models.Player).filter(models.Player.id == storage.player_id).first()
+        if db_player is not None:
+            sync_player_wealth_stats(db, db_player)
+        db.commit()
 
 
 def add_item_to_inventory(
@@ -743,29 +761,17 @@ def add_item_to_inventory(
     *,
     commit: bool = True,
 ) -> None:
-    if quantity <= 0:
-        raise ValueError("Quantity must be greater than zero")
+    db_player = db.query(models.Player).filter(models.Player.id == inventory.player_id).first()
+    if db_player is None:
+        raise ValueError("Player not found")
 
-    ensure_default_item_catalog(db)
-    current_total = get_inventory_total_quantity(db, inventory.id)
-    if current_total + quantity > INVENTORY_CAPACITY_LIMIT:
-        raise ValueError("Inventory capacity exceeded")
-
-    _upsert_inventory_item_quantity(db, inventory.id, item_code, quantity)
-
-    if commit:
-        db_player = db.query(models.Player).filter(models.Player.id == inventory.player_id).first()
-        if db_player is not None:
-            sync_player_wealth_stats(db, db_player)
-        db.commit()
-    
+    db_storage = get_or_create_storage(db, db_player.id, commit=False)
+    add_item_to_storage(db, db_storage, item_code, quantity, commit=commit)
 
 
-
-
-def remove_item_from_inventory(
+def remove_item_from_storage(
     db: Session,
-    inventory: models.Inventory,
+    storage: models.Storage,
     item_code: str,
     quantity: int,
 ) -> None:
@@ -776,49 +782,20 @@ def remove_item_from_inventory(
     if db_item is None:
         raise ValueError("Item code not found")
 
-    db_inventory_item = (
-        db.query(models.InventoryItem)
+    db_storage_item = (
+        db.query(models.StorageItem)
         .filter(
-            models.InventoryItem.inventory_id == inventory.id,
-            models.InventoryItem.item_id == db_item.id,
+            models.StorageItem.storage_id == storage.id,
+            models.StorageItem.item_id == db_item.id,
         )
         .first()
     )
-    if db_inventory_item is None or db_inventory_item.quantity < quantity:
-        raise ValueError("Not enough items in inventory")
+    if db_storage_item is None or db_storage_item.quantity < quantity:
+        raise ValueError("Not enough items in storage")
 
-    db_inventory_item.quantity -= quantity
-    if db_inventory_item.quantity == 0:
-        db.delete(db_inventory_item)
-
-
-def remove_item_from_warehouse(
-    db: Session,
-    warehouse: models.Warehouse,
-    item_code: str,
-    quantity: int,
-) -> None:
-    if quantity <= 0:
-        raise ValueError("Quantity must be greater than zero")
-
-    db_item = get_item_catalog_by_code(db, item_code)
-    if db_item is None:
-        raise ValueError("Item code not found")
-
-    db_warehouse_item = (
-        db.query(models.WarehouseItem)
-        .filter(
-            models.WarehouseItem.warehouse_id == warehouse.id,
-            models.WarehouseItem.item_id == db_item.id,
-        )
-        .first()
-    )
-    if db_warehouse_item is None or db_warehouse_item.quantity < quantity:
-        raise ValueError("Not enough items in warehouse")
-
-    db_warehouse_item.quantity -= quantity
-    if db_warehouse_item.quantity == 0:
-        db.delete(db_warehouse_item)
+    db_storage_item.quantity -= quantity
+    if db_storage_item.quantity == 0:
+        db.delete(db_storage_item)
 
 
 def list_crop_types(db: Session) -> list[models.CropType]:
@@ -912,7 +889,7 @@ def plant_crop(
     crop_type_code: str,
     plot_id: int,
 ) -> models.PlayerCrop:
-    db_inventory = get_or_create_inventory(db, player.id)
+    db_storage = get_or_create_storage(db, player.id)
     db_plot = get_land_plot_by_id_for_player(db, player.id, plot_id)
     if db_plot is None:
         raise ValueError("Land plot not found")
@@ -923,7 +900,7 @@ def plant_crop(
     if db_crop_type is None:
         raise ValueError("Crop type not found")
 
-    remove_item_from_inventory(db, db_inventory, db_crop_type.seed_item_code, 1)
+    remove_item_from_storage(db, db_storage, db_crop_type.seed_item_code, 1)
 
     db_stats = get_stats_by_player_id(db, player.id)
     if db_stats is not None:
@@ -952,10 +929,10 @@ def harvest_crop(db: Session, player: models.Player, crop_id: int) -> tuple[dict
     if db_player_crop.state != "ready":
         raise ValueError("Crop is not ready for harvest")
 
-    db_inventory = get_or_create_inventory(db, player.id)
-    add_item_to_inventory(
+    db_storage = get_or_create_storage(db, player.id)
+    add_item_to_storage(
         db,
-        db_inventory,
+        db_storage,
         db_player_crop.crop_type.product_item_code,
         db_player_crop.crop_type.yield_quantity,
         commit=False,
@@ -975,9 +952,9 @@ def harvest_crop(db: Session, player: models.Player, crop_id: int) -> tuple[dict
     sync_player_wealth_stats(db, player)
     db.commit()
     db.refresh(db_plot)
-    db.refresh(db_inventory)
+    db.refresh(db_storage)
 
-    return harvested_crop_response, get_inventory_structured(db, db_inventory)
+    return harvested_crop_response, get_storage_structured(db, db_storage)
 
 
 def get_player_progression(db: Session, player: models.Player) -> dict:
@@ -988,61 +965,16 @@ def get_player_progression(db: Session, player: models.Player) -> dict:
     return build_progression_response(db, player, db_stats)
 
 
-def transfer_inventory_to_warehouse(
-    db: Session,
-    player: models.Player,
-    item_code: str,
-    quantity: int,
-) -> tuple[dict, dict]:
-    db_inventory = get_or_create_inventory(db, player.id)
-    db_warehouse = get_or_create_warehouse(db, player.id)
-
-    if get_inventory_item_quantity(db, db_inventory, item_code) < quantity:
-        raise ValueError("Not enough items in inventory")
-
-    warehouse_total = get_warehouse_total_quantity(db, db_warehouse.id)
-    if warehouse_total + quantity > db_warehouse.capacity_limit:
-        raise ValueError("Warehouse capacity exceeded")
-
-    remove_item_from_inventory(db, db_inventory, item_code, quantity)
-    _upsert_warehouse_item_quantity(db, db_warehouse.id, item_code, quantity)
-    sync_player_wealth_stats(db, player)
-    db.commit()
-    db.refresh(db_inventory)
-    db.refresh(db_warehouse)
-    return get_inventory_structured(db, db_inventory), get_warehouse_structured(db, db_warehouse)
-
-
-def transfer_warehouse_to_inventory(
-    db: Session,
-    player: models.Player,
-    item_code: str,
-    quantity: int,
-) -> tuple[dict, dict]:
-    db_inventory = get_or_create_inventory(db, player.id)
-    db_warehouse = get_or_create_warehouse(db, player.id)
-
-    if get_warehouse_item_quantity(db, db_warehouse, item_code) < quantity:
-        raise ValueError("Not enough items in warehouse")
-
-    inventory_total = get_inventory_total_quantity(db, db_inventory.id)
-    if inventory_total + quantity > INVENTORY_CAPACITY_LIMIT:
-        raise ValueError("Inventory capacity exceeded")
-
-    _upsert_inventory_item_quantity(db, db_inventory.id, item_code, quantity)
-    remove_item_from_warehouse(db, db_warehouse, item_code, quantity)
-    sync_player_wealth_stats(db, player)
-    db.commit()
-    db.refresh(db_inventory)
-    db.refresh(db_warehouse)
-    return get_inventory_structured(db, db_inventory), get_warehouse_structured(db, db_warehouse)
-
-
 def get_inventory_structured(db: Session, inventory: models.Inventory) -> dict:
-    rows: list[tuple[models.InventoryItem, models.ItemCatalog]] = (
-        db.query(models.InventoryItem, models.ItemCatalog)
-        .join(models.ItemCatalog, models.InventoryItem.item_id == models.ItemCatalog.id)
-        .filter(models.InventoryItem.inventory_id == inventory.id)
+    db_storage = get_or_create_storage(db, inventory.player_id)
+    return get_storage_structured(db, db_storage)
+
+
+def get_storage_structured(db: Session, storage: models.Storage) -> dict:
+    rows: list[tuple[models.StorageItem, models.ItemCatalog]] = (
+        db.query(models.StorageItem, models.ItemCatalog)
+        .join(models.ItemCatalog, models.StorageItem.item_id == models.ItemCatalog.id)
+        .filter(models.StorageItem.storage_id == storage.id)
         .order_by(models.ItemCatalog.category.asc(), models.ItemCatalog.name.asc())
         .all()
     )
@@ -1050,14 +982,14 @@ def get_inventory_structured(db: Session, inventory: models.Inventory) -> dict:
     grouped: dict[str, list[dict[str, int | str]]] = defaultdict(list)
     total_quantity = 0
 
-    for inv_item, catalog_item in rows:
-        total_quantity += inv_item.quantity
+    for storage_item, catalog_item in rows:
+        total_quantity += storage_item.quantity
         grouped[catalog_item.category].append(
             {
                 "code": catalog_item.code,
                 "name": catalog_item.name,
                 "category": catalog_item.category,
-                "quantity": inv_item.quantity,
+                "quantity": storage_item.quantity,
             }
         )
 
@@ -1067,46 +999,9 @@ def get_inventory_structured(db: Session, inventory: models.Inventory) -> dict:
     ]
 
     return {
-        "id": inventory.id,
-        "player_id": inventory.player_id,
-        "capacity_limit": INVENTORY_CAPACITY_LIMIT,
-        "total_quantity": total_quantity,
-        "categories": categories,
-    }
-
-
-def get_warehouse_structured(db: Session, warehouse: models.Warehouse) -> dict:
-    rows: list[tuple[models.WarehouseItem, models.ItemCatalog]] = (
-        db.query(models.WarehouseItem, models.ItemCatalog)
-        .join(models.ItemCatalog, models.WarehouseItem.item_id == models.ItemCatalog.id)
-        .filter(models.WarehouseItem.warehouse_id == warehouse.id)
-        .order_by(models.ItemCatalog.category.asc(), models.ItemCatalog.name.asc())
-        .all()
-    )
-
-    grouped: dict[str, list[dict[str, int | str]]] = defaultdict(list)
-    total_quantity = 0
-
-    for warehouse_item, catalog_item in rows:
-        total_quantity += warehouse_item.quantity
-        grouped[catalog_item.category].append(
-            {
-                "code": catalog_item.code,
-                "name": catalog_item.name,
-                "category": catalog_item.category,
-                "quantity": warehouse_item.quantity,
-            }
-        )
-
-    categories = [
-        {"category": category, "items": items}
-        for category, items in grouped.items()
-    ]
-
-    return {
-        "id": warehouse.id,
-        "player_id": warehouse.player_id,
-        "capacity_limit": warehouse.capacity_limit,
+        "id": storage.id,
+        "player_id": storage.player_id,
+        "capacity_limit": storage.capacity_limit,
         "total_quantity": total_quantity,
         "categories": categories,
     }
