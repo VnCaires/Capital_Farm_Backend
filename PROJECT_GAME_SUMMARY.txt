@@ -138,8 +138,9 @@ Wealth Progression Rules (current)
   - value of active planted crops
 
 Project Direction (from planning)
-- Remaining pre-Unity backend work should focus on farm expansion, pricing/economy rules, transaction safety, and API stability
-- Animal systems, market dynamics, multiplayer/social, analytics, and Unity integration remain later milestones
+- Remaining pre-Unity backend work should now focus on quality baseline, transaction safety, and API stability more than new gameplay breadth
+- Highest-value next steps are automated tests/CI, server-authoritative validation, anti-duplication safeguards, and auditability
+- Economy, animals, multiplayer/social, analytics, and Unity integration remain later milestones after backend hardening
 - Development utilities should gradually be replaced by final product actions as the game loop becomes fully server-authoritative
 
 Operational Notes for Codex
