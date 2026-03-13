@@ -8,6 +8,17 @@ from sqlalchemy.orm import Session
 from . import auth, models
 
 
+class GameplayValidationError(ValueError):
+    def __init__(self, detail: str, status_code: int = 400):
+        super().__init__(detail)
+        self.detail = detail
+        self.status_code = status_code
+
+
+def _fail(detail: str, status_code: int = 400) -> None:
+    raise GameplayValidationError(detail, status_code)
+
+
 ALLOWED_TRANSACTION_TYPES = {"deposit", "expense"}
 ALLOWED_LAND_STATES = {"empty", "plowed", "planted"}
 ALLOWED_CROP_STATES = {"planted", "growing", "ready", "harvested"}
@@ -71,14 +82,14 @@ def _is_plot_occupied(state: str) -> bool:
 def _validate_land_state(state: str) -> str:
     normalized = state.strip().lower()
     if normalized not in ALLOWED_LAND_STATES:
-        raise ValueError("Invalid land state")
+        _fail("Invalid land state")
     return normalized
 
 
 def _validate_player_managed_land_state(state: str) -> str:
     normalized = _validate_land_state(state)
     if normalized == "planted":
-        raise ValueError("Planted state is managed by crop actions only")
+        _fail("Planted state is managed by crop actions only")
     return normalized
 
 
@@ -257,6 +268,88 @@ def get_item_catalog_by_code(db: Session, code: str) -> models.ItemCatalog | Non
     return db.query(models.ItemCatalog).filter(models.ItemCatalog.code == code).first()
 
 
+def require_item_catalog(db: Session, item_code: str) -> models.ItemCatalog:
+    db_item = get_item_catalog_by_code(db, item_code)
+    if db_item is None:
+        _fail("Item code not found")
+    return db_item
+
+
+def require_storage_capacity(storage: models.Storage, current_total: int, quantity_to_add: int) -> None:
+    if current_total + quantity_to_add > storage.capacity_limit:
+        _fail("Storage capacity exceeded", status_code=409)
+
+
+def require_storage_item_quantity(
+    db: Session,
+    storage: models.Storage,
+    item_code: str,
+    quantity: int,
+) -> tuple[models.ItemCatalog, models.StorageItem]:
+    db_item = require_item_catalog(db, item_code)
+    db_storage_item = (
+        db.query(models.StorageItem)
+        .filter(
+            models.StorageItem.storage_id == storage.id,
+            models.StorageItem.item_id == db_item.id,
+        )
+        .first()
+    )
+    if db_storage_item is None or db_storage_item.quantity < quantity:
+        _fail("Not enough items in storage", status_code=409)
+    return db_item, db_storage_item
+
+
+def require_crop_type(db: Session, crop_type_code: str) -> models.CropType:
+    db_crop_type = get_crop_type_by_code(db, crop_type_code.strip().lower())
+    if db_crop_type is None:
+        _fail("Crop type not found")
+    return db_crop_type
+
+
+def require_land_plot_available_for_planting(land_plot: models.LandPlot | None) -> models.LandPlot:
+    if land_plot is None:
+        _fail("Land plot not found", status_code=404)
+    if land_plot.is_occupied or land_plot.state not in {"empty", "plowed"}:
+        _fail("Land plot is not available for planting", status_code=409)
+    return land_plot
+
+
+def require_player_crop(player_crop: models.PlayerCrop | None) -> models.PlayerCrop:
+    if player_crop is None:
+        _fail("Crop not found", status_code=404)
+    return player_crop
+
+
+def require_crop_ready_for_harvest(player_crop: models.PlayerCrop) -> None:
+    if player_crop.state != "ready":
+        _fail("Crop is not ready for harvest", status_code=409)
+
+
+def require_manual_land_plot_update_allowed(land_plot: models.LandPlot) -> None:
+    if land_plot.is_occupied or (land_plot.crop is not None and land_plot.crop.state != "harvested"):
+        _fail("Occupied plots cannot be changed manually", status_code=409)
+
+
+def require_valid_soil_type(soil_type: str) -> str:
+    normalized_soil_type = soil_type.strip().lower()
+    if not normalized_soil_type:
+        _fail("Invalid soil type")
+    return normalized_soil_type
+
+
+def require_farm_expansion_available(current_farm_size: int) -> int:
+    next_farm_size = get_next_farm_size(current_farm_size)
+    if next_farm_size is None:
+        _fail("Farm already reached the maximum size", status_code=409)
+    return next_farm_size
+
+
+def require_player_can_afford(player: models.Player, amount: float, detail: str) -> None:
+    if player.balance < amount:
+        _fail(detail, status_code=409)
+
+
 def ensure_default_item_catalog(db: Session) -> bool:
     changed = False
     for code, name, category, wealth_value in DEFAULT_ITEM_CATALOG:
@@ -357,9 +450,7 @@ def _upsert_inventory_item_quantity(
         return
 
     db.flush()
-    db_item = get_item_catalog_by_code(db, item_code)
-    if db_item is None:
-        raise ValueError("Item code not found")
+    db_item = require_item_catalog(db, item_code)
 
     db_inventory_item = (
         db.query(models.InventoryItem)
@@ -386,9 +477,7 @@ def _upsert_storage_item_quantity(
         return
 
     db.flush()
-    db_item = get_item_catalog_by_code(db, item_code)
-    if db_item is None:
-        raise ValueError("Item code not found")
+    db_item = require_item_catalog(db, item_code)
 
     db_storage_item = (
         db.query(models.StorageItem)
@@ -758,12 +847,11 @@ def add_item_to_storage(
     commit: bool = True,
 ) -> None:
     if quantity <= 0:
-        raise ValueError("Quantity must be greater than zero")
+        _fail("Quantity must be greater than zero")
 
     ensure_default_item_catalog(db)
     current_total = get_storage_total_quantity(db, storage.id)
-    if current_total + quantity > storage.capacity_limit:
-        raise ValueError("Storage capacity exceeded")
+    require_storage_capacity(storage, current_total, quantity)
 
     _upsert_storage_item_quantity(db, storage.id, item_code, quantity)
 
@@ -784,7 +872,7 @@ def add_item_to_inventory(
 ) -> None:
     db_player = db.query(models.Player).filter(models.Player.id == inventory.player_id).first()
     if db_player is None:
-        raise ValueError("Player not found")
+        _fail("Player not found", status_code=404)
 
     db_storage = get_or_create_storage(db, db_player.id, commit=False)
     add_item_to_storage(db, db_storage, item_code, quantity, commit=commit)
@@ -797,11 +885,9 @@ def remove_item_from_storage(
     quantity: int,
 ) -> None:
     if quantity <= 0:
-        raise ValueError("Quantity must be greater than zero")
+        _fail("Quantity must be greater than zero")
 
-    db_item = get_item_catalog_by_code(db, item_code)
-    if db_item is None:
-        raise ValueError("Item code not found")
+    db_item = require_item_catalog(db, item_code)
 
     db_storage_item = (
         db.query(models.StorageItem)
@@ -812,7 +898,7 @@ def remove_item_from_storage(
         .first()
     )
     if db_storage_item is None or db_storage_item.quantity < quantity:
-        raise ValueError("Not enough items in storage")
+        _fail("Not enough items in storage", status_code=409)
 
     db_storage_item.quantity -= quantity
     if db_storage_item.quantity == 0:
@@ -1033,15 +1119,8 @@ def plant_crop(
     plot_id: int,
 ) -> models.PlayerCrop:
     db_storage = get_or_create_storage(db, player.id)
-    db_plot = get_land_plot_by_id_for_player(db, player.id, plot_id)
-    if db_plot is None:
-        raise ValueError("Land plot not found")
-    if db_plot.is_occupied or db_plot.state not in {"empty", "plowed"}:
-        raise ValueError("Land plot is not available for planting")
-
-    db_crop_type = get_crop_type_by_code(db, crop_type_code.strip().lower())
-    if db_crop_type is None:
-        raise ValueError("Crop type not found")
+    db_plot = require_land_plot_available_for_planting(get_land_plot_by_id_for_player(db, player.id, plot_id))
+    db_crop_type = require_crop_type(db, crop_type_code)
 
     remove_item_from_storage(db, db_storage, db_crop_type.seed_item_code, 1)
 
@@ -1065,12 +1144,8 @@ def plant_crop(
 
 
 def harvest_crop(db: Session, player: models.Player, crop_id: int) -> tuple[dict, dict]:
-    db_player_crop = get_player_crop_by_id_for_player(db, player.id, crop_id)
-    if db_player_crop is None:
-        raise ValueError("Crop not found")
-
-    if db_player_crop.state != "ready":
-        raise ValueError("Crop is not ready for harvest")
+    db_player_crop = require_player_crop(get_player_crop_by_id_for_player(db, player.id, crop_id))
+    require_crop_ready_for_harvest(db_player_crop)
 
     db_storage = get_or_create_storage(db, player.id)
     add_item_to_storage(
@@ -1181,22 +1256,17 @@ def expand_land_grid(
     player: models.Player,
     soil_type: str = DEFAULT_SOIL_TYPE,
 ) -> dict:
-    normalized_soil_type = soil_type.strip().lower()
-    if not normalized_soil_type:
-        raise ValueError("Invalid soil type")
+    normalized_soil_type = require_valid_soil_type(soil_type)
 
     land_plots = get_or_create_land_plots(db, player.id)
     current_farm_size = get_current_farm_size(land_plots)
-    next_farm_size = get_next_farm_size(current_farm_size)
-    if next_farm_size is None:
-        raise ValueError("Farm already reached the maximum size")
+    next_farm_size = require_farm_expansion_available(current_farm_size)
 
     land_economy = sync_land_tax_state(db, player, apply_due_tax=True, commit=False)
     expansion_price = land_economy["next_expansion_price"]
     if expansion_price is None:
-        raise ValueError("Farm already reached the maximum size")
-    if player.balance < expansion_price:
-        raise ValueError("Insufficient balance for expansion")
+        _fail("Farm already reached the maximum size", status_code=409)
+    require_player_can_afford(player, expansion_price, "Insufficient balance for expansion")
 
     existing_coordinates = {(plot.x, plot.y) for plot in land_plots}
     new_plots: list[models.LandPlot] = []
@@ -1216,7 +1286,7 @@ def expand_land_grid(
             new_plots.append(db_plot)
 
     if not new_plots:
-        raise ValueError("No new plots available for the next farm tier")
+        _fail("No new plots available for the next farm tier", status_code=409)
 
     player.balance = _round_wealth(player.balance - expansion_price)
     create_wallet_transaction(db, player.id, expansion_price, "expense")
@@ -1292,13 +1362,11 @@ def create_land_plot(
     state: str = "empty",
 ) -> models.LandPlot:
     validated_state = _validate_player_managed_land_state(state)
-    normalized_soil_type = soil_type.strip().lower()
-    if not normalized_soil_type:
-        raise ValueError("Invalid soil type")
+    normalized_soil_type = require_valid_soil_type(soil_type)
 
     db_plot = get_land_plot_by_coordinates(db, player_id, x, y)
     if db_plot is not None:
-        raise ValueError("Plot coordinates already in use")
+        _fail("Plot coordinates already in use", status_code=409)
 
     db_plot = models.LandPlot(
         player_id=player_id,
@@ -1316,9 +1384,7 @@ def create_land_plot(
 
 def update_land_plot_state(db: Session, land_plot: models.LandPlot, new_state: str) -> models.LandPlot:
     validated_state = _validate_player_managed_land_state(new_state)
-
-    if land_plot.is_occupied or (land_plot.crop is not None and land_plot.crop.state != "harvested"):
-        raise ValueError("Occupied plots cannot be changed manually")
+    require_manual_land_plot_update_allowed(land_plot)
 
     land_plot.state = validated_state
     land_plot.is_occupied = False

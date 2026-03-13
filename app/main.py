@@ -11,6 +11,10 @@ models.Base.metadata.create_all(bind=database.engine)
 app = FastAPI()
 
 
+def raise_http_from_validation_error(exc: crud.GameplayValidationError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
 def get_db() -> Generator[Session, None, None]:
     db = database.SessionLocal()
     try:
@@ -218,8 +222,8 @@ def add_inventory_item(
 
     try:
         crud.add_item_to_storage(db, db_storage, payload.item_code, payload.quantity)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except crud.GameplayValidationError as exc:
+        raise raise_http_from_validation_error(exc) from exc
 
     return crud.get_storage_structured(db, db_storage)
 
@@ -251,8 +255,8 @@ def plant_crop(
 
     try:
         db_player_crop = crud.plant_crop(db, db_player, payload.crop_type_code, payload.plot_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except crud.GameplayValidationError as exc:
+        raise raise_http_from_validation_error(exc) from exc
 
     return crud.build_player_crop_response(db_player_crop)
 
@@ -295,8 +299,8 @@ def harvest_my_crop(
 
     try:
         harvested_crop, storage = crud.harvest_crop(db, db_player, crop_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except crud.GameplayValidationError as exc:
+        raise raise_http_from_validation_error(exc) from exc
 
     return {"crop": harvested_crop, "storage": storage}
 
@@ -331,8 +335,8 @@ def create_land_plot(
             soil_type=payload.soil_type,
             state=payload.state,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except crud.GameplayValidationError as exc:
+        raise raise_http_from_validation_error(exc) from exc
 
 
 @app.post("/land/expand", response_model=schemas.LandExpansionResponse)
@@ -347,8 +351,8 @@ def expand_my_land(
 
     try:
         return crud.expand_land_grid(db, db_player, payload.soil_type)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except crud.GameplayValidationError as exc:
+        raise raise_http_from_validation_error(exc) from exc
 
 
 @app.patch("/land/plots/{plot_id}/state", response_model=schemas.LandPlotResponse)
@@ -368,5 +372,5 @@ def update_land_plot_state(
 
     try:
         return crud.update_land_plot_state(db, db_plot, payload.state)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except crud.GameplayValidationError as exc:
+        raise raise_http_from_validation_error(exc) from exc
